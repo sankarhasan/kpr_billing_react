@@ -64,7 +64,7 @@ function createWindow(): void {
       // Give React a moment to mount and run its initial IPC calls.
       await new Promise((resolve) => setTimeout(resolve, 1500))
       const status = getDbStatus()
-      console.log(`[verify] database ok=${status.ok} path=${status.path}`)
+      console.log(`[verify] database ok=${status.ok} schema=${status.schemaVersion} path=${status.path}`)
       try {
         const rendererOk: boolean = await mainWindow!.webContents.executeJavaScript(
           '(document.getElementById("root")?.childElementCount ?? 0) > 0 && !!window.kpr'
@@ -72,9 +72,43 @@ function createWindow(): void {
         const ipcOk: boolean = await mainWindow!.webContents.executeJavaScript(
           'window.kpr.getDbStatus().then((s) => s.ok === true && s.schemaVersion > 0).catch(() => false)'
         )
-        console.log(`[verify] renderer_mounted=${rendererOk} preload_ipc=${ipcOk}`)
-        console.log(rendererOk && ipcOk && status.ok ? '[verify] PHASE1_ALL_OK' : '[verify] FAILURE')
-        app.exit(rendererOk && ipcOk && status.ok ? 0 : 3)
+        // End-to-end product CRUD through the secure IPC bridge. A temporary
+        // product is created and ALWAYS removed again (never left as sample
+        // data); duplicate-code guard and pagination search are exercised too.
+        const productsResult: string = await mainWindow!.webContents.executeJavaScript(`
+          (async () => {
+            try {
+              const code = 'ZVERIFY' + Date.now();
+              const input = {
+                productCode: code,
+                productName: 'VERIFY TEMP (auto-removed)',
+                category: '', brand: '',
+                ratePaise: 12345, discountType: 'none', discountPercent: 0, discountAmountPaise: 0,
+                finalRatePaise: 12345, greenCracker: false,
+                description: 'Temporary row from the automated verify run.', imagePath: '',
+                restoreActive: false
+              };
+              const created = await window.kpr.products.create(input);
+              if (!created.ok) return 'CREATE_FAILED:' + JSON.stringify(created.error);
+              const listRes = await window.kpr.products.list({ search: code });
+              const found = listRes.total === 1;
+              const dup = await window.kpr.products.create(input);
+              const dupGuard = !dup.ok && dup.error.code === 'DUPLICATE_CODE';
+              const upd = await window.kpr.products.update(created.data.id, { ...input, ratePaise: 99999, finalRatePaise: 99999 });
+              const removed = await window.kpr.products.remove(created.data.id);
+              const gone = (await window.kpr.products.list({ search: code })).total === 0;
+              return found && dupGuard && upd.ok && removed.ok && removed.data.action === 'deleted' && gone
+                ? 'PRODUCTS_IPC_OK' : 'PRODUCTS_IPC_MISMATCH';
+            } catch (e) {
+              return 'PRODUCTS_IPC_THROW:' + (e && e.message ? e.message : String(e));
+            }
+          })()
+        `)
+        const schemaOk = status.ok && status.schemaVersion === 2
+        console.log(`[verify] renderer_mounted=${rendererOk} preload_ipc=${ipcOk} products=${productsResult}`)
+        const allOk = rendererOk && ipcOk && schemaOk && productsResult === 'PRODUCTS_IPC_OK'
+        console.log(allOk ? '[verify] PHASE2_ALL_OK' : '[verify] FAILURE')
+        app.exit(allOk ? 0 : 3)
       } catch (err) {
         console.error('[verify] RENDERER CHECK ERROR:', err)
         app.exit(4)

@@ -7,7 +7,8 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { INITIAL_SCHEMA_SQL, DEFAULT_SETTINGS_SQL, SCHEMA_VERSION } from './schema'
+import { migrateDatabase } from './migrate'
+import { SCHEMA_VERSION } from './schema'
 import type { DbStatus, TableCounts } from '@shared/ipc'
 
 export const DATA_FOLDER_NAME = 'kpr-billing'
@@ -18,8 +19,14 @@ let dbPath = ''
 /** Deterministic data directory outside any build/temp folder.
  *  Same folder name in dev and packaged builds so data survives upgrades. */
 function resolveDbPath(): string {
-  const dataDir = join(app.getPath('appData'), DATA_FOLDER_NAME)
-  return join(dataDir, 'kpr-billing.db')
+  return join(app.getPath('appData'), DATA_FOLDER_NAME, 'kpr-billing.db')
+}
+
+/** Local product images live next to the database (never base64 in SQLite). */
+export function getImagesDir(): string {
+  const dir = join(app.getPath('appData'), DATA_FOLDER_NAME, 'images')
+  mkdirSync(dir, { recursive: true })
+  return dir
 }
 
 export function initDatabase(): void {
@@ -32,14 +39,9 @@ export function initDatabase(): void {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
 
-  const migrate = db.transaction(() => {
-    db!.exec(INITIAL_SCHEMA_SQL)
-    db!.exec(DEFAULT_SETTINGS_SQL)
-    db!
-      .prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
-      .run('schema_version', String(SCHEMA_VERSION))
-  })
-  migrate()
+  // Versioned, idempotent migration (creates tables on a fresh DB).
+  migrateDatabase(db)
+  getImagesDir()
 }
 
 export function closeDatabase(): void {
@@ -80,10 +82,11 @@ export function getDbStatus(): DbStatus {
       invoices: countRows('invoices'),
       invoiceItems: countRows('invoice_items')
     }
+    const userVersion = getDatabase().pragma('user_version', { simple: true }) as number
     return {
       ok: true,
       path: dbPath,
-      schemaVersion: Number(getSetting('schema_version') ?? SCHEMA_VERSION),
+      schemaVersion: userVersion || SCHEMA_VERSION,
       counts,
       taxEnabled: getSetting('tax_enabled') === '1'
     }

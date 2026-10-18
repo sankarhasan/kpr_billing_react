@@ -20,7 +20,7 @@ app.whenReady().then(() => {
     db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)')
     db.prepare('INSERT INTO t (v) VALUES (?)').run('hello')
     const row = db.prepare('SELECT v FROM t WHERE id = 1').get()
-    const sqliteVersion = db.sqliteVersion
+    const sqliteVersion = db.prepare('SELECT sqlite_version() AS v').get().v
     const ok = row && row.v === 'hello'
     db.close()
     for (const suffix of ['', '-wal', '-shm']) {
