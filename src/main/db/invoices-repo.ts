@@ -20,9 +20,13 @@ import {
   validateInvoiceInput,
   computeInvoiceTotals,
   parseInvoiceLookup,
+  isValidDateOnly,
   WALK_IN_NAME,
   type Invoice,
-  type InvoiceLine
+  type InvoiceLine,
+  type InvoiceHistoryParams,
+  type InvoiceHistoryRow,
+  type InvoiceHistoryResult
 } from '../../shared/invoices.ts'
 import { ipcErr, ipcOk, type IpcResult, type DiscountType } from '../../shared/products.ts'
 
@@ -272,6 +276,151 @@ export function searchInvoice(db: Db, rawInput: unknown): IpcResult<Invoice> {
     return ipcErr<Invoice>('NOT_FOUND', `No invoice found for ${parsed.value}`)
   }
   return ipcOk(invoice)
+}
+
+// ─── Sales History listing (search / date filters / sort / page / summary) ───
+
+/** Escape LIKE wildcards (and the escape char) in user text. */
+function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (m) => `\\${m}`)
+}
+
+/** The calendar day AFTER 'YYYY-MM-DD' — used for an inclusive end date. */
+function dayAfterLocal(dateOnly: string): string {
+  const [y, mo, d] = dateOnly.split('-').map(Number)
+  return new Date(Date.UTC(y, mo - 1, d + 1)).toISOString().slice(0, 10)
+}
+
+interface HistoryWhere {
+  sql: string // includes leading WHERE when non-empty
+  bind: Record<string, unknown>
+}
+
+function buildHistoryWhere(params: InvoiceHistoryParams): HistoryWhere {
+  const parts: string[] = []
+  const bind: Record<string, unknown> = {}
+
+  if (params.invoiceNumber) {
+    // Reuse the billing-page lookup rules: exact-4-digit suffix and full
+    // numbers match precisely; anything else (partially typed) falls back to
+    // a safe escaped contains-search so legacy numbers stay findable.
+    const parsed = parseInvoiceLookup(params.invoiceNumber)
+    if (parsed.ok && parsed.mode === 'suffix') {
+      parts.push('invoice_number LIKE @invPattern')
+      bind.invPattern = `%${parsed.digits}`
+    } else if (parsed.ok && parsed.mode === 'full') {
+      parts.push('invoice_number = @invExact COLLATE NOCASE')
+      bind.invExact = parsed.value
+    } else {
+      parts.push(`invoice_number LIKE @invPattern ESCAPE '\\'`)
+      bind.invPattern = `%${escapeLike(params.invoiceNumber)}%`
+    }
+  }
+
+  if (params.customer) {
+    // Snapshot columns (NOT the live customers table) — historical truth.
+    parts.push(`(customer_name LIKE @cust ESCAPE '\\' OR customer_phone LIKE @cust ESCAPE '\\')`)
+    bind.cust = `%${escapeLike(params.customer)}%`
+  }
+
+  // invoice_date is 'YYYY-MM-DD HH:MM:SS' local text: lexicographic range
+  // checks are exact, with BOTH boundary days included.
+  if (params.startDate) {
+    parts.push('invoice_date >= @startDate')
+    bind.startDate = params.startDate
+  }
+  if (params.endDate) {
+    parts.push('invoice_date < @endDateNext')
+    bind.endDateNext = dayAfterLocal(params.endDate)
+  }
+
+  return { sql: parts.length > 0 ? `WHERE ${parts.join(' AND ')}` : '', bind }
+}
+
+interface HistoryRowRaw {
+  id: number
+  invoice_number: string
+  invoice_date: string
+  customer_name: string
+  customer_phone: string
+  item_count: number | null
+  subtotal_paise: number
+  discount_paise: number
+  round_off_paise: number
+  total_paise: number
+}
+
+export function listInvoices(db: Db, params: InvoiceHistoryParams): IpcResult<InvoiceHistoryResult> {
+  // Defensive re-checks (the IPC layer validates first).
+  if (params.startDate && !isValidDateOnly(params.startDate)) {
+    return ipcErr<InvoiceHistoryResult>('VALIDATION', 'Start date must be a real date (YYYY-MM-DD).')
+  }
+  if (params.endDate && !isValidDateOnly(params.endDate)) {
+    return ipcErr<InvoiceHistoryResult>('VALIDATION', 'End date must be a real date (YYYY-MM-DD).')
+  }
+  if (params.startDate && params.endDate && params.startDate > params.endDate) {
+    return ipcErr<InvoiceHistoryResult>('VALIDATION', 'Start date must not be later than the end date.')
+  }
+
+  const { sql: whereSql, bind } = buildHistoryWhere(params)
+  const from = `FROM invoices i ${whereSql}`
+
+  const counts = db
+    .prepare<Record<string, unknown>, { c: number }>(`SELECT COUNT(*) AS c ${from}`)
+    .get(bind)
+  const totalMatches = counts?.c ?? 0
+
+  // Summary over ALL matching invoices (integer paise aggregation).
+  const agg = db
+    .prepare<
+      Record<string, unknown>,
+      { invoice_count: number; total_sales: number; total_discounts: number; total_items: number | null }
+    >(
+      `SELECT COUNT(*) AS invoice_count,
+              COALESCE(SUM(i.total_paise), 0) AS total_sales,
+              COALESCE(SUM(i.discount_paise), 0) AS total_discounts,
+              COALESCE(SUM((SELECT SUM(ii.quantity) FROM invoice_items ii WHERE ii.invoice_id = i.id)), 0) AS total_items
+       ${from}`
+    )
+    .get(bind)
+
+  const offset = (params.page - 1) * params.pageSize
+  const rows = db
+    .prepare<Record<string, unknown>, HistoryRowRaw>(
+      `SELECT i.id, i.invoice_number, i.invoice_date, i.customer_name, i.customer_phone,
+              i.subtotal_paise, i.discount_paise, i.round_off_paise, i.total_paise,
+              (SELECT SUM(ii.quantity) FROM invoice_items ii WHERE ii.invoice_id = i.id) AS item_count
+       ${from}
+       ORDER BY i.invoice_date DESC, i.id DESC
+       LIMIT @limit OFFSET @offset`
+    )
+    .all({ ...bind, limit: params.pageSize, offset })
+
+  const items: InvoiceHistoryRow[] = rows.map((r) => ({
+    id: r.id,
+    invoiceNumber: r.invoice_number,
+    invoiceDate: r.invoice_date,
+    customerName: r.customer_name,
+    customerPhone: r.customer_phone,
+    itemCount: Math.round(r.item_count ?? 0),
+    subtotalPaise: r.subtotal_paise,
+    discountPaise: r.discount_paise,
+    roundOffPaise: r.round_off_paise ?? 0,
+    totalPaise: r.total_paise
+  }))
+
+  return ipcOk({
+    items,
+    page: params.page,
+    pageSize: params.pageSize,
+    totalMatches,
+    summary: {
+      invoiceCount: agg?.invoice_count ?? 0,
+      totalSalesPaise: agg?.total_sales ?? 0,
+      totalDiscountPaise: agg?.total_discounts ?? 0,
+      totalItemsSold: Math.round(agg?.total_items ?? 0)
+    }
+  })
 }
 
 /** Allocate an unused KPR-INV-XXXX number (cryptographic randomness). */

@@ -12,6 +12,9 @@ import { getDbStatus, getImagesDir, getDatabase } from './db'
 import * as repo from './db/products-repo'
 import * as customersRepo from './db/customers-repo'
 import * as invoicesRepo from './db/invoices-repo'
+import { getPrintInfo, getShopSettings, updateShopSettings } from './db/settings-repo'
+import * as backupService from './backup/backup-service'
+import * as printWindows from './print/windows'
 import {
   ipcErr,
   ipcOk,
@@ -22,6 +25,7 @@ import {
   type ProductImportSummary
 } from '@shared/products'
 import type { CustomerListParams } from '@shared/customers'
+import { validateInvoiceHistoryParams } from '@shared/invoices'
 
 const MAX_CSV_BYTES = 20 * 1024 * 1024 // 20 MB import cap
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024 // 5 MB image pick cap
@@ -71,7 +75,7 @@ function validString(value: unknown, maxLen: number, channel: string): string | 
 
 // ─── Registration wrapper ──────────────────────────────────────────────
 
-type IpcHandler = (args: unknown[]) => unknown
+type IpcHandler = (args: unknown[], event: Electron.IpcMainInvokeEvent) => unknown
 
 function trustedHandle(channel: string, handler: IpcHandler): void {
   ipcMain.handle(channel, async (event, ...args) => {
@@ -79,7 +83,7 @@ function trustedHandle(channel: string, handler: IpcHandler): void {
       throw new Error(`Untrusted IPC sender on channel "${channel}"`)
     }
     try {
-      return await handler(args)
+      return await handler(args, event)
     } catch (err) {
       if (err instanceof ValidationError) {
         return ipcErr(err.code, err.message)
@@ -273,6 +277,15 @@ export function registerIpcHandlers(): void {
     return invoicesRepo.searchInvoice(getDatabase(), number)
   })
 
+  trustedHandle(IPC_CHANNELS.INVOICES_LIST, (args) => {
+    const o = asOptionalObject(args[0], IPC_CHANNELS.INVOICES_LIST)
+    const { errors, value } = validateInvoiceHistoryParams(o.params)
+    if (Object.keys(errors).length > 0) {
+      return ipcErr('VALIDATION', 'Please correct the highlighted filters.', errors)
+    }
+    return invoicesRepo.listInvoices(getDatabase(), value)
+  })
+
   trustedHandle(IPC_CHANNELS.INVOICES_RESERVE_NUMBER, (args) => {
     expectNoArgs(IPC_CHANNELS.INVOICES_RESERVE_NUMBER, args)
     return ipcOk(invoicesRepo.reserveInvoiceNumber(getDatabase()))
@@ -285,6 +298,64 @@ export function registerIpcHandlers(): void {
       throw new ValidationError('INVALID_PARAMS', 'A valid draft invoice number is required.')
     }
     return ipcOk({ released: invoicesRepo.releaseInvoiceNumber(number) })
+  })
+
+  // ── Settings (read-only allowlist for printable documents + shop profile) ──
+  trustedHandle(IPC_CHANNELS.SETTINGS_GET_PRINT_INFO, (args) => {
+    expectNoArgs(IPC_CHANNELS.SETTINGS_GET_PRINT_INFO, args)
+    return ipcOk(getPrintInfo(getDatabase()))
+  })
+
+  trustedHandle(IPC_CHANNELS.SETTINGS_GET_SHOP, (args) => {
+    expectNoArgs(IPC_CHANNELS.SETTINGS_GET_SHOP, args)
+    return ipcOk(getShopSettings(getDatabase()))
+  })
+
+  trustedHandle(IPC_CHANNELS.SETTINGS_UPDATE_SHOP, (args) => {
+    return updateShopSettings(getDatabase(), args[0])
+  })
+
+  // ── Backup & Restore (Phase 7). Shop settings live inside the database,
+  //    so they are inherently included in every backup and restored with it.
+  //    The restore flow validates first, takes a pre-restore safety copy,
+  //    and rolls back automatically on any failure. ──
+  trustedHandle(IPC_CHANNELS.BACKUP_CREATE, async () => {
+    return await backupService.createBackupFlow()
+  })
+
+  trustedHandle(IPC_CHANNELS.BACKUP_RESTORE, async () => {
+    return await backupService.restoreBackupFlow()
+  })
+
+  trustedHandle(IPC_CHANNELS.APP_RELAUNCH, () => {
+    backupService.relaunchApp()
+    return ipcOk(true)
+  })
+
+  // ── Print / PDF (Phase 6). Privileged: main creates and tracks every
+  //    printable window; the renderer only ever names an invoice id + a
+  //    whitelisted format. Handlers act on event.sender, which is already
+  //    proven trusted by trustedHandle's frame-URL check. ──
+  trustedHandle(IPC_CHANNELS.PRINT_OPEN_WINDOW, (args, event) => {
+    return printWindows.openPrintWindow(event.sender, args[0])
+  })
+
+  trustedHandle(IPC_CHANNELS.PRINT_DOCUMENT_READY, async (_args, event) => {
+    // Runs the armed print/pdf action for THIS window (null = nothing armed).
+    return await printWindows.handleDocumentReady(event.sender)
+  })
+
+  trustedHandle(IPC_CHANNELS.PRINT_NOW, async (_args, event) => {
+    return await printWindows.printNow(event.sender)
+  })
+
+  trustedHandle(IPC_CHANNELS.PRINT_SAVE_PDF, async (_args, event) => {
+    return await printWindows.savePdfSelf(event.sender)
+  })
+
+  trustedHandle(IPC_CHANNELS.PRINT_CLOSE_SELF, (_args, event) => {
+    printWindows.closeSelf(event.sender)
+    return ipcOk(true)
   })
 
   // ── Bulk CSV import (single transaction inside the repo) ──

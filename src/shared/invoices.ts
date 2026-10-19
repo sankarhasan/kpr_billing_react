@@ -274,3 +274,135 @@ export function validateInvoiceInput(raw: unknown): {
     }
   }
 }
+
+// ─── Sales History (Phase 5): list filters, rows, summary ──────────────
+
+/** Validated query for the main-process invoice history list. */
+export interface InvoiceHistoryParams {
+  /** Full number / 4-digit suffix / partial text — matched per lookup rules. */
+  invoiceNumber?: string
+  /** Case-insensitive partial match on the saved customer snapshot. */
+  customer?: string
+  /** Inclusive calendar day 'YYYY-MM-DD' (local-date semantics). */
+  startDate?: string
+  /** Inclusive calendar day 'YYYY-MM-DD'. */
+  endDate?: string
+  page: number
+  pageSize: number
+}
+
+export interface InvoiceHistoryRow {
+  id: number
+  invoiceNumber: string
+  /** Stored local timestamp 'YYYY-MM-DD HH:MM:SS'. */
+  invoiceDate: string
+  customerName: string
+  customerPhone: string
+  /** Total quantity sold across the saved invoice lines. */
+  itemCount: number
+  subtotalPaise: number
+  discountPaise: number
+  roundOffPaise: number
+  totalPaise: number
+}
+
+/** Aggregates over ALL rows matching the filters (not just the page). */
+export interface InvoiceHistorySummary {
+  invoiceCount: number
+  totalSalesPaise: number
+  totalDiscountPaise: number
+  totalItemsSold: number
+}
+
+export interface InvoiceHistoryResult {
+  items: InvoiceHistoryRow[]
+  page: number
+  pageSize: number
+  totalMatches: number
+  summary: InvoiceHistorySummary
+}
+
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/
+
+/** Real-calendar check on 'YYYY-MM-DD' (rejects 2026-13-45 etc.). */
+export function isValidDateOnly(s: string): boolean {
+  const m = DATE_ONLY_RE.exec(s)
+  if (!m) return false
+  const [y, mo, d] = [Number(s.slice(0, 4)), Number(s.slice(5, 7)), Number(s.slice(8, 10))]
+  const dt = new Date(Date.UTC(y, mo - 1, d))
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d
+}
+
+/**
+ * Validate an untrusted history-list query. Monetary/date FILTERING happens
+ * in the main process; nothing here reads the DB.
+ */
+export function validateInvoiceHistoryParams(raw: unknown): {
+  errors: Record<string, string>
+  value: InvoiceHistoryParams
+} {
+  const errors: Record<string, string> = {}
+  const o = (raw ?? {}) as Record<string, unknown>
+  const value: InvoiceHistoryParams = { page: 1, pageSize: 25 }
+
+  const str = (key: string, maxLen: number): string | undefined => {
+    const v = o[key]
+    if (v === undefined || v === null) return undefined
+    if (typeof v !== 'string' || v.length > maxLen) {
+      errors[key] = 'Invalid filter text.'
+      return undefined
+    }
+    const t = v.trim()
+    return t === '' ? undefined : t
+  }
+
+  const invoiceNumber = str('invoiceNumber', 60)
+  if (invoiceNumber !== undefined) value.invoiceNumber = invoiceNumber
+  const customer = str('customer', 200)
+  if (customer !== undefined) value.customer = customer
+
+  const startDate = str('startDate', 10)
+  if (startDate !== undefined) {
+    if (!isValidDateOnly(startDate)) errors.startDate = 'Start date must be a real date (YYYY-MM-DD).'
+    else value.startDate = startDate
+  }
+  const endDate = str('endDate', 10)
+  if (endDate !== undefined) {
+    if (!isValidDateOnly(endDate)) errors.endDate = 'End date must be a real date (YYYY-MM-DD).'
+    else value.endDate = endDate
+  }
+  if (!errors.startDate && !errors.endDate && value.startDate && value.endDate && value.startDate > value.endDate) {
+    errors.endDate = 'Start date must not be later than the end date.'
+  }
+
+  if (typeof o.page === 'number' && Number.isInteger(o.page) && o.page > 0) {
+    value.page = Math.min(o.page, 1_000_000)
+  } else if (o.page !== undefined && o.page !== null) {
+    errors.page = 'Invalid page number.'
+  }
+  if (typeof o.pageSize === 'number' && Number.isInteger(o.pageSize) && o.pageSize > 0 && o.pageSize <= 200) {
+    value.pageSize = o.pageSize
+  } else if (o.pageSize !== undefined && o.pageSize !== null) {
+    errors.pageSize = 'Page size must be between 1 and 200.'
+  }
+
+  return { errors, value }
+}
+
+/**
+ * Format a stored local timestamp 'YYYY-MM-DD HH:MM:SS' as
+ * '19-10-2026 02:30 PM'. Pure string parsing (no Date/timezone shifts):
+ * invoice_date is ALREADY local time in the database.
+ * Falls back to the raw value when it does not match the expected shape
+ * (legacy rows may differ).
+ */
+export function formatInvoiceDate(raw: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::\d{2})?)?/.exec(raw)
+  if (!m) return raw
+  const [, y, mo, d, hh, mm] = m
+  if (hh === undefined) return `${d}-${mo}-${y}`
+  const h = Number(hh)
+  const suffix = h >= 12 ? 'PM' : 'AM'
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${d}-${mo}-${y} ${String(h12).padStart(2, '0')}:${mm} ${suffix}`
+}

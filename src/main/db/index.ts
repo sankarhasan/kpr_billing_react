@@ -58,6 +58,14 @@ export function getDatabase(): Database.Database {
   return db
 }
 
+/** Absolute path of the live database file (backup/restore targeting). */
+export function getDbPath(): string {
+  if (!dbPath) {
+    return resolveDbPath()
+  }
+  return dbPath
+}
+
 function countRows(table: 'products' | 'customers' | 'invoices' | 'invoice_items'): number {
   const row = getDatabase()
     .prepare<[], { c: number }>(`SELECT COUNT(*) AS c FROM ${table}`)

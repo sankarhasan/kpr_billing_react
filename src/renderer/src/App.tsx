@@ -1,4 +1,5 @@
 import type React from 'react'
+import { useMemo } from 'react'
 
 import { Sidebar } from '@/components/layout/sidebar'
 import { useUiStore, type PageId } from '@/store/ui-store'
@@ -8,6 +9,8 @@ import { ProductsPage } from '@/pages/products'
 import { CustomersPage } from '@/pages/customers'
 import { HistoryPage } from '@/pages/history'
 import { SettingsPage } from '@/pages/settings'
+import { PrintWindowPage } from '@/pages/print-window'
+import { parsePrintQuery } from '@shared/print'
 
 const PAGE_TITLES: Record<PageId, string> = {
   dashboard: 'Dashboard',
@@ -28,8 +31,15 @@ const PAGES: Record<PageId, React.ComponentType> = {
 }
 
 export default function App() {
+  // A print window is a separate top-level surface created ONLY by the main
+  // process (controlled ?print=1 query) — it replaces the whole app shell.
+  const printRequest = useMemo(() => parsePrintQuery(window.location.search), [])
   const currentPage = useUiStore((s) => s.currentPage)
   const ActivePage = PAGES[currentPage]
+
+  if (printRequest) {
+    return <PrintWindowPage request={printRequest} />
+  }
 
   return (
     <div className="flex h-screen overflow-hidden">

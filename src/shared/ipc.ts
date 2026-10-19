@@ -24,8 +24,25 @@ export const IPC_CHANNELS = {
   INVOICES_CREATE: 'invoices:create',
   INVOICES_GET: 'invoices:getById',
   INVOICES_GET_BY_NUMBER: 'invoices:getByNumber',
+  INVOICES_LIST: 'invoices:list',
   INVOICES_RESERVE_NUMBER: 'invoices:reserveNumber',
-  INVOICES_RELEASE_NUMBER: 'invoices:releaseNumber'
+  INVOICES_RELEASE_NUMBER: 'invoices:releaseNumber',
+  SETTINGS_GET_PRINT_INFO: 'settings:getPrintInfo',
+  SETTINGS_GET_SHOP: 'settings:getShop',
+  SETTINGS_UPDATE_SHOP: 'settings:updateShop',
+  BACKUP_CREATE: 'backup:create',
+  BACKUP_RESTORE: 'backup:restore',
+  APP_RELAUNCH: 'app:relaunch',
+  PRINT_OPEN_WINDOW: 'print:openInvoiceWindow',
+  PRINT_NOW: 'print:printNow',
+  PRINT_SAVE_PDF: 'print:savePdfSelf',
+  PRINT_DOCUMENT_READY: 'print:documentReady',
+  PRINT_CLOSE_SELF: 'print:closeSelf'
+} as const
+
+/** main → renderer push events (webContents.send). */
+export const IPC_EVENTS = {
+  PRINT_PDF_RESULT: 'print:pdfResult'
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

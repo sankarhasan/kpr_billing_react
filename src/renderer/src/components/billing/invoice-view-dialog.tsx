@@ -1,4 +1,5 @@
-import { Eye } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Eye, FileDown, Printer } from 'lucide-react'
 
 import {
   Dialog,
@@ -12,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { formatPaiseDisplay } from '@shared/products'
 import { computeLineAmounts, type Invoice } from '@shared/invoices'
+import { describePrintOutcome, type PrintFormat, type PrintWindowMode } from '@shared/print'
 
 interface Props {
   open: boolean
@@ -27,7 +29,27 @@ const money = (p: number) => `₹${formatPaiseDisplay(p)}`
  * summary always reconciles with the item table (also for legacy invoices).
  */
 export function InvoiceViewDialog({ open, onOpenChange, invoice }: Props) {
+  const [printStatus, setPrintStatus] = useState<string | null>(null)
+
+  // Results of main-driven PDF exports / prints are pushed to this window.
+  useEffect(() => {
+    if (!open) return
+    setPrintStatus(null)
+    return window.kpr.print.onPdfResult((ev) => setPrintStatus(describePrintOutcome(ev.result)))
+  }, [open])
+
   if (!invoice) return null
+
+  const act = (format: PrintFormat, mode: PrintWindowMode) => {
+    if (mode === 'pdf') setPrintStatus('Preparing PDF — choose the destination in the save dialog…')
+    void window.kpr.print
+      .openInvoice({ invoiceId: invoice.id, format, mode })
+      .then((res) => {
+        // For preview/print-start failures the immediate answer matters most.
+        if (!res.ok) setPrintStatus(res.error.message)
+      })
+      .catch((err: unknown) => setPrintStatus(err instanceof Error ? err.message : 'Print request failed.'))
+  }
 
   const agg = invoice.lines.reduce(
     (acc, l) => {
@@ -139,6 +161,30 @@ export function InvoiceViewDialog({ open, onOpenChange, invoice }: Props) {
         {invoice.notes && (
           <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">{invoice.notes}</p>
         )}
+
+        {/* Phase 6 — print / PDF actions on the SAVED snapshot (read-only). */}
+        <div className="flex flex-wrap items-center gap-1.5 border-t pt-2">
+          <span className="mr-1 text-xs font-medium text-muted-foreground">Print / PDF:</span>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act('a4', 'preview')}>
+            <Eye className="size-3.5" /> Preview A4
+          </Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act('receipt', 'preview')}>
+            <Eye className="size-3.5" /> Preview 80mm
+          </Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act('a4', 'print')}>
+            <Printer className="size-3.5" /> Print A4
+          </Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act('receipt', 'print')}>
+            <Printer className="size-3.5" /> Print 80mm
+          </Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act('a4', 'pdf')}>
+            <FileDown className="size-3.5" /> Save PDF (A4)
+          </Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act('receipt', 'pdf')}>
+            <FileDown className="size-3.5" /> Save PDF (Receipt)
+          </Button>
+        </div>
+        {printStatus && <p className="text-xs text-muted-foreground">{printStatus}</p>}
 
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)}>Close</Button>
