@@ -6,7 +6,7 @@
  */
 import { create } from 'zustand'
 import { computeInvoiceTotals } from '@shared/invoices'
-import type { Invoice } from '@shared/invoices'
+import type { Invoice, PaymentMethod } from '@shared/invoices'
 import type { Customer } from '@shared/customers'
 import type { DiscountType, Product } from '@shared/products'
 
@@ -42,6 +42,8 @@ interface BillingState {
   custAddress: string
   lines: DraftLine[]
   notes: string
+  /** Explicit register choice persisted on save; default Cash for a new draft. */
+  paymentMethod: PaymentMethod
   saving: boolean
   error: string | null
   statusMessage: string | null
@@ -61,6 +63,7 @@ interface BillingState {
   changeQuantity: (productId: number, delta: number) => void
   removeLine: (productId: number) => void
   setNotes: (notes: string) => void
+  setPaymentMethod: (method: PaymentMethod) => void
   clearMessages: () => void
   save: () => Promise<boolean>
   resetDraft: () => void
@@ -77,6 +80,7 @@ export const useBillingStore = create<BillingState>((set, get) => ({
   custAddress: '',
   lines: [],
   notes: '',
+  paymentMethod: 'CASH',
   saving: false,
   error: null,
   statusMessage: null,
@@ -161,10 +165,14 @@ export const useBillingStore = create<BillingState>((set, get) => ({
 
   setNotes: (notes) => set({ notes }),
 
+  // Switching Cash/UPI touches NOTHING else — items, quantities, customer
+  // details, discounts and totals are untouched by design.
+  setPaymentMethod: (method) => set({ paymentMethod: method }),
+
   clearMessages: () => set({ error: null, statusMessage: null, lineErrors: {} }),
 
   save: async () => {
-    const { lines, customerMode, selectedCustomer, custName, custPhone, custAddress, notes, saving } = get()
+    const { lines, customerMode, selectedCustomer, custName, custPhone, custAddress, notes, paymentMethod, saving } = get()
     if (saving) return false // duplicate-submission guard
 
     // Normalise quantities (invalid/zero -> 1) before validating so the user
@@ -202,6 +210,7 @@ export const useBillingStore = create<BillingState>((set, get) => ({
         customerAddress: custAddress,
         lines: normalized.map((l) => ({ productId: l.productId, quantity: l.quantity! })),
         notes,
+        paymentMethod,
         // Reference to a main-process reservation — ignored unless the main
         // process still holds this exact number reserved for a live draft.
         draftNumber: get().draftNumber ?? undefined
@@ -216,6 +225,7 @@ export const useBillingStore = create<BillingState>((set, get) => ({
         statusMessage: `Invoice ${res.data.invoiceNumber} saved successfully.`,
         lines: [],
         notes: '',
+        paymentMethod: 'CASH', // next draft starts on Cash again
         customerMode: 'walkin',
         selectedCustomer: null,
         custName: '',
@@ -239,6 +249,7 @@ export const useBillingStore = create<BillingState>((set, get) => ({
     set({
       lines: [],
       notes: '',
+      paymentMethod: 'CASH',
       customerMode: 'walkin',
       selectedCustomer: null,
       custName: '',

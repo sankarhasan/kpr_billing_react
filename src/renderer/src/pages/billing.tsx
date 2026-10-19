@@ -33,6 +33,7 @@ export function BillingPage() {
     custAddress,
     lines,
     notes,
+    paymentMethod,
     saving,
     error,
     statusMessage,
@@ -50,6 +51,7 @@ export function BillingPage() {
     changeQuantity,
     removeLine,
     setNotes,
+    setPaymentMethod,
     clearMessages,
     save,
     resetDraft,
@@ -526,6 +528,33 @@ export function BillingPage() {
               <div className="flex justify-between border-t pt-1.5 text-base font-bold">
                 <span>Grand Total</span>
                 <span className="tabular-nums">{money(totals.totalPaise)}</span>
+              </div>
+            </div>
+
+            {/* Payment method — selection only; switching never changes items/totals. */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Payment Method</span>
+              <div className="flex gap-2" role="group" aria-label="Payment method">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={paymentMethod === 'CASH' ? 'default' : 'outline'}
+                  className="flex-1"
+                  aria-pressed={paymentMethod === 'CASH'}
+                  onClick={() => setPaymentMethod('CASH')}
+                >
+                  Cash
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={paymentMethod === 'UPI' ? 'default' : 'outline'}
+                  className="flex-1"
+                  aria-pressed={paymentMethod === 'UPI'}
+                  onClick={() => setPaymentMethod('UPI')}
+                >
+                  UPI
+                </Button>
               </div>
             </div>
 

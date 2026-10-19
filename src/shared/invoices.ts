@@ -134,6 +134,21 @@ export interface InvoiceLineInput {
   quantity: number
 }
 
+/** Payment methods this shop bills with. Stored uppercase in payment_mode. */
+export const PAYMENT_METHODS = ['CASH', 'UPI'] as const
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
+
+/**
+ * Normalize a STORED payment_mode value for display/validation.
+ * Legacy rows written before this feature defaulted to 'cash' — that is
+ * truthfully CASH. Anything unrecognized (or blank) returns null so the UI
+ * prints "Not recorded" — an unknown method is NEVER shown as UPI.
+ */
+export function normalizePaymentMethod(stored: unknown): PaymentMethod | null {
+  const s = typeof stored === 'string' ? stored.trim().toUpperCase() : ''
+  return s === 'CASH' || s === 'UPI' ? (s as PaymentMethod) : null
+}
+
 export interface InvoiceCreateInput {
   /** null => walk-in customer */
   customerId: number | null
@@ -149,6 +164,8 @@ export interface InvoiceCreateInput {
    * a live reservation for exactly this number.
    */
   draftNumber?: string
+  /** Explicitly selected at the register; defaults to CASH when omitted. */
+  paymentMethod?: PaymentMethod | string
 }
 
 // ─── Invoice lookup (reopen by full number OR last-4-digit suffix) ─────
@@ -208,10 +225,28 @@ export function validateInvoiceInput(raw: unknown): {
     customerAddress: string
     lines: InvoiceLineInput[]
     notes: string
+    paymentMethod: PaymentMethod
   }
 } {
   const errors: Record<string, string> = {}
   const o = (raw ?? {}) as Record<string, unknown>
+
+  // Payment method: only CASH/UPI are accepted (case-insensitive input,
+  // stored uppercase). Missing => CASH compatibility default for older
+  // callers; any other value is REJECTED at this main-process boundary.
+  let paymentMethod: PaymentMethod = 'CASH'
+  if (o.paymentMethod !== undefined && o.paymentMethod !== null && o.paymentMethod !== '') {
+    const pm = typeof o.paymentMethod === 'string' ? o.paymentMethod.trim().toUpperCase() : null
+    if (pm === null) {
+      errors.paymentMethod = 'Unsupported payment method — choose Cash or UPI.'
+    } else if (pm === '') {
+      /* blank selection falls back to the CASH default */
+    } else if (!(PAYMENT_METHODS as readonly string[]).includes(pm)) {
+      errors.paymentMethod = 'Unsupported payment method — choose Cash or UPI.'
+    } else {
+      paymentMethod = pm as PaymentMethod
+    }
+  }
 
   const customerId = o.customerId === null || o.customerId === undefined ? null : o.customerId
   if (customerId !== null && !isPosInt(customerId)) {
@@ -270,7 +305,8 @@ export function validateInvoiceInput(raw: unknown): {
       customerPhone,
       customerAddress,
       lines,
-      notes
+      notes,
+      paymentMethod
     }
   }
 }

@@ -528,10 +528,12 @@ export function createInvoice(db: Db, rawInput: unknown): IpcResult<Invoice> {
   const insertInvoice = db.prepare(`
     INSERT INTO invoices (
       invoice_number, customer_id, customer_name, customer_phone, customer_address,
-      subtotal_paise, discount_paise, round_off_paise, tax_amount_paise, total_paise, notes
+      subtotal_paise, discount_paise, round_off_paise, tax_amount_paise, total_paise,
+      payment_mode, notes
     ) VALUES (
       @number, @customerId, @customerName, @customerPhone, @customerAddress,
-      @subtotal, @discount, @roundOff, @tax, @total, @notes
+      @subtotal, @discount, @roundOff, @tax, @total,
+      @paymentMode, @notes
     )
   `)
   const insertItem = db.prepare(`
@@ -561,6 +563,8 @@ export function createInvoice(db: Db, rawInput: unknown): IpcResult<Invoice> {
       roundOff: totals.roundOffPaise,
       tax: totals.taxAmountPaise,
       total: totals.totalPaise,
+      // Already validated to 'CASH' | 'UPI' by validateInvoiceInput (main boundary).
+      paymentMode: value.paymentMethod,
       notes: value.notes
     })
     const invoiceId = Number(info.lastInsertRowid)

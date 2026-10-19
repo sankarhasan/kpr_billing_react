@@ -60,6 +60,7 @@ const INFO: PrintInfo = {
   shopAddress: '45 Crackers Road, Deepavali Nagar',
   shopPhone: '98765 43210',
   shopPhoneAlt: '044 123 4567',
+  shopEmail: 'orders@kprfirecrackers.example',
   gstin: '33ABCDE1234F1Z5',
   receiptFooter: 'Thank you for shopping with us!'
 }
@@ -181,7 +182,11 @@ test('buildPrintDocument uses stored totals, snapshot prices and formatted date'
     assert.equal(doc.shopAddress, '45 Crackers Road, Deepavali Nagar')
     assert.equal(doc.shopPhone, '98765 43210')
     assert.equal(doc.shopPhoneAlt, '044 123 4567')
+    assert.equal(doc.shopEmail, 'orders@kprfirecrackers.example')
     assert.equal(doc.shopGstin, '33ABCDE1234F1Z5')
+
+    // Phase 8: payment method from the SAVED invoice (default CASH)
+    assert.equal(doc.paymentMethodDisplay, 'CASH')
   } finally {
     t.cleanup()
   }
@@ -213,7 +218,9 @@ test('legacy invoice renders with empty product code and optional fields omitted
     assert.equal(doc.hasAnyDiscount, false)
     assert.equal(doc.lines[0].productName.length > 60, true, 'long name preserved verbatim')
     assert.equal(doc.shopName, 'KPR Firecrackers', 'blank setting falls back to the shop default')
+    assert.equal(doc.shopEmail, '', 'unconfigured email is omitted — never a placeholder')
     assert.equal(doc.footerMessage, '')
+    assert.equal(doc.paymentMethodDisplay, 'CASH', "legacy stored 'cash' truthfully displays CASH")
   } finally {
     t.cleanup()
   }

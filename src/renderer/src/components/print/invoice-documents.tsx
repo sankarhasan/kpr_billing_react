@@ -71,6 +71,9 @@ export function A4InvoiceDocument({ doc }: { doc: PrintDocument }) {
             Ph: {[doc.shopPhone, doc.shopPhoneAlt].filter(Boolean).join(' / ')}
           </div>
         )}
+        {doc.shopEmail && (
+          <div style={{ fontSize: '10pt', marginTop: '1pt', overflowWrap: 'anywhere' }}>Email: {doc.shopEmail}</div>
+        )}
         {doc.shopGstin && <div style={{ fontSize: '9pt', marginTop: '1pt' }}>GSTIN: {doc.shopGstin}</div>}
         <div style={{ fontSize: '11pt', letterSpacing: '3pt', marginTop: '3pt' }}>INVOICE</div>
       </div>
@@ -101,8 +104,8 @@ export function A4InvoiceDocument({ doc }: { doc: PrintDocument }) {
             </tr>
             {doc.paymentMode && (
               <tr>
-                <td style={{ ...cell, textAlign: 'right', color: '#444', whiteSpace: 'nowrap' }}>Payment</td>
-                <td style={{ ...cell, whiteSpace: 'nowrap' }}>{doc.paymentMode}</td>
+                <td style={{ ...cell, textAlign: 'right', color: '#444', whiteSpace: 'nowrap' }}>Payment Method</td>
+                <td style={{ ...cell, whiteSpace: 'nowrap' }}>{doc.paymentMethodDisplay}</td>
               </tr>
             )}
           </tbody>
@@ -239,6 +242,9 @@ export function Receipt80Document({ doc }: { doc: PrintDocument }) {
           Ph: {[doc.shopPhone, doc.shopPhoneAlt].filter(Boolean).join(' / ')}
         </div>
       )}
+      {doc.shopEmail && (
+        <div style={{ textAlign: 'center', fontSize: '10px', overflowWrap: 'anywhere' }}>Email: {doc.shopEmail}</div>
+      )}
       {doc.shopGstin && <div style={{ textAlign: 'center', fontSize: '10px' }}>GSTIN: {doc.shopGstin}</div>}
       <div style={{ textAlign: 'center', fontSize: '10px', letterSpacing: '2px' }}>INVOICE</div>
 
@@ -251,6 +257,10 @@ export function Receipt80Document({ doc }: { doc: PrintDocument }) {
       <div style={rRow}>
         <span>Date:</span>
         <span>{doc.dateTimeDisplay}</span>
+      </div>
+      <div style={rRow}>
+        <span>Payment:</span>
+        <span>{doc.paymentMethodDisplay}</span>
       </div>
       <div style={{ ...rRow, overflowWrap: 'anywhere' }}>
         <span style={{ flexShrink: 0 }}>Customer:</span>

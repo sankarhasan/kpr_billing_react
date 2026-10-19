@@ -31,6 +31,7 @@ const EMPTY_SHOP: ShopSettings = {
   shopAddress: '',
   shopPhone: '',
   shopPhoneAlt: '',
+  shopEmail: '',
   gstin: '',
   receiptFooter: ''
 }
@@ -182,6 +183,13 @@ function ShopDetailsCard() {
                 </label>
                 <Input id="shop-phone-alt" value={form.shopPhoneAlt} onChange={set('shopPhoneAlt')} maxLength={SHOP_LIMITS.shopPhoneAlt} placeholder="" />
                 {fieldError('shopPhoneAlt')}
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-muted-foreground" htmlFor="shop-email">
+                  Shop Email <span className="opacity-60">(optional — printed when set)</span>
+                </label>
+                <Input id="shop-email" type="email" value={form.shopEmail} onChange={set('shopEmail')} maxLength={SHOP_LIMITS.shopEmail} placeholder="shop@example.com" />
+                {fieldError('shopEmail')}
               </div>
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-medium text-muted-foreground" htmlFor="shop-gstin">

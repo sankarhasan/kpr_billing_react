@@ -14,6 +14,7 @@ export interface ShopSettings {
   shopAddress: string
   shopPhone: string
   shopPhoneAlt: string
+  shopEmail: string
   gstin: string
   receiptFooter: string
 }
@@ -24,6 +25,7 @@ export const SHOP_SETTING_KEYS: Record<keyof ShopSettings, string> = {
   shopAddress: 'shop_address',
   shopPhone: 'shop_phone',
   shopPhoneAlt: 'shop_phone_alt',
+  shopEmail: 'shop_email',
   gstin: 'gstin',
   receiptFooter: 'receipt_footer'
 }
@@ -33,12 +35,15 @@ export const SHOP_LIMITS = {
   shopAddress: 200,
   shopPhone: 30,
   shopPhoneAlt: 30,
+  shopEmail: 100,
   gstin: 20,
   receiptFooter: 200
 } as const
 
 /** Digits with common phone punctuation only. */
 const PHONE_RE = /^[0-9+()\-\s]+$/
+/** Pragmatic e-mail shape (single @, no spaces/commas; TLD required). */
+const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,.]{2,}$/
 /** Standard 15-character GSTIN: state code (2) + PAN (10) + entity (1) + 'Z' + check digit. */
 const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/
 
@@ -68,6 +73,7 @@ export function validateShopSettings(raw: unknown): ShopSettingsValidation {
   const shopAddress = text('shopAddress', 'Address')
   const shopPhone = text('shopPhone', 'Primary phone')
   const shopPhoneAlt = text('shopPhoneAlt', 'Alternate phone')
+  const shopEmail = text('shopEmail', 'Email')
   const gstin = text('gstin', 'GSTIN').toUpperCase()
   const receiptFooter = text('receiptFooter', 'Footer message')
 
@@ -77,12 +83,15 @@ export function validateShopSettings(raw: unknown): ShopSettingsValidation {
   if (shopPhoneAlt && !PHONE_RE.test(shopPhoneAlt)) {
     errors.shopPhoneAlt = 'Phone may contain digits and + ( ) - spaces only.'
   }
+  if (shopEmail && !EMAIL_RE.test(shopEmail)) {
+    errors.shopEmail = 'Enter a valid email address (e.g. shop@example.com).'
+  }
   if (gstin && !GSTIN_RE.test(gstin)) {
     errors.gstin = 'GSTIN must be the standard 15-character format (e.g. 22ABCDE1234F1Z5).'
   }
 
   return {
     errors,
-    value: { shopName, shopAddress, shopPhone, shopPhoneAlt, gstin, receiptFooter }
+    value: { shopName, shopAddress, shopPhone, shopPhoneAlt, shopEmail, gstin, receiptFooter }
   }
 }

@@ -38,6 +38,7 @@ export function getShopSettings(db: Db): ShopSettings {
     shopAddress: getSettingValue(db, SHOP_SETTING_KEYS.shopAddress),
     shopPhone: getSettingValue(db, SHOP_SETTING_KEYS.shopPhone),
     shopPhoneAlt: getSettingValue(db, SHOP_SETTING_KEYS.shopPhoneAlt),
+    shopEmail: getSettingValue(db, SHOP_SETTING_KEYS.shopEmail),
     gstin: getSettingValue(db, SHOP_SETTING_KEYS.gstin),
     receiptFooter: getSettingValue(db, SHOP_SETTING_KEYS.receiptFooter)
   }
@@ -67,6 +68,7 @@ export function getPrintInfo(db: Db): PrintInfo {
     shopAddress: s.shopAddress.trim(),
     shopPhone: s.shopPhone.trim(),
     shopPhoneAlt: s.shopPhoneAlt.trim(),
+    shopEmail: s.shopEmail.trim(),
     gstin: s.gstin.trim(),
     receiptFooter: s.receiptFooter.trim()
   }

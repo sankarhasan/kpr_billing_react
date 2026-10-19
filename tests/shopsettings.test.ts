@@ -43,6 +43,7 @@ const FULL_SHOP = {
   shopAddress: '45 Crackers Road',
   shopPhone: '98765 43210',
   shopPhoneAlt: '044-1234567',
+  shopEmail: 'shop@kprfirecrackers.example',
   gstin: '33ABCDE1234F1Z5',
   receiptFooter: 'Happy Deepavali!'
 }
@@ -65,7 +66,7 @@ test('shop name saves and updates through the settings repository', () => {
   }
 })
 
-test('address, both phones and the footer save and round-trip', () => {
+test('address, both phones, email and the footer save and round-trip', () => {
   const t = setup()
   try {
     const res = updateShopSettings(t.db, FULL_SHOP)
@@ -74,6 +75,7 @@ test('address, both phones and the footer save and round-trip', () => {
     assert.equal(s.shopAddress, '45 Crackers Road')
     assert.equal(s.shopPhone, '98765 43210')
     assert.equal(s.shopPhoneAlt, '044-1234567')
+    assert.equal(s.shopEmail, 'shop@kprfirecrackers.example')
     assert.equal(s.receiptFooter, 'Happy Deepavali!')
     assert.equal(s.gstin, '33ABCDE1234F1Z5')
   } finally {
@@ -90,13 +92,15 @@ test('blank optional fields are accepted and stored blank (= cleared)', () => {
       shopAddress: '   ',
       shopPhone: '',
       shopPhoneAlt: '',
+      shopEmail: '   ',
       gstin: '',
       receiptFooter: ''
     })
     assert.ok(cleared.ok)
-    assert.deepEqual(cleared.data, { ...FULL_SHOP, shopName: 'KPR Firecrackers', shopAddress: '', shopPhone: '', shopPhoneAlt: '', gstin: '', receiptFooter: '' })
+    assert.deepEqual(cleared.data, { ...FULL_SHOP, shopAddress: '', shopPhone: '', shopPhoneAlt: '', shopEmail: '', gstin: '', receiptFooter: '' })
     const info = getPrintInfo(t.db)
     assert.equal(info.shopAddress, '')
+    assert.equal(info.shopEmail, '', 'cleared email is not printed')
     assert.equal(info.gstin, '', 'cleared GSTIN is not printed')
     assert.equal(info.shopName, 'KPR Firecrackers')
   } finally {
@@ -153,6 +157,33 @@ test('shop settings persist across database reconnection (restart simulation)', 
   }
 })
 
+test('shop email: valid saves, malformed rejected, blank accepted, trimmed', () => {
+  // VALIDATION (shared, runs before any write)
+  assert.equal(validateShopSettings({ ...FULL_SHOP, shopEmail: '  ' }).errors.shopEmail, undefined)
+  assert.equal(validateShopSettings({ ...FULL_SHOP, shopEmail: '  shop@x.com  ' }).value.shopEmail, 'shop@x.com')
+  assert.ok(validateShopSettings({ ...FULL_SHOP, shopEmail: 'not-an-email' }).errors.shopEmail)
+  assert.ok(validateShopSettings({ ...FULL_SHOP, shopEmail: 'a@b' }).errors.shopEmail, 'TLD required')
+  assert.ok(validateShopSettings({ ...FULL_SHOP, shopEmail: 'a b@c.com' }).errors.shopEmail)
+  assert.ok(validateShopSettings({ ...FULL_SHOP, shopEmail: 'x'.repeat(101) }).errors.shopEmail)
+  assert.equal(validateShopSettings({ ...FULL_SHOP, shopEmail: 'orders+kpr@kpr-firecrackers.example' }).errors.shopEmail, undefined)
+
+  const t = setup()
+  try {
+    const saved = updateShopSettings(t.db, { ...FULL_SHOP, shopEmail: '  billing@kpr.example  ' })
+    assert.ok(saved.ok)
+    assert.equal(saved.data.shopEmail, 'billing@kpr.example')
+    assert.equal(getPrintInfo(t.db).shopEmail, 'billing@kpr.example')
+
+    // malformed non-empty value is refused and nothing is overwritten
+    const bad = updateShopSettings(t.db, { ...FULL_SHOP, shopEmail: '@nope' })
+    assert.ok(!bad.ok)
+    assert.equal(bad.error.fields?.shopEmail !== undefined, true)
+    assert.equal(getShopSettings(t.db).shopEmail, 'billing@kpr.example')
+  } finally {
+    t.cleanup()
+  }
+})
+
 // ─── Print documents use CURRENT settings; history stays frozen ────────
 
 test('print documents reflect the CURRENT shop settings for A4 and receipt models', () => {
@@ -172,16 +203,18 @@ test('print documents reflect the CURRENT shop settings for A4 and receipt model
     assert.equal(doc1.shopName, 'KPR Firecrackers')
     assert.equal(doc1.shopAddress, '45 Crackers Road')
     assert.equal(doc1.shopPhone, '98765 43210')
+    assert.equal(doc1.shopEmail, 'shop@kprfirecrackers.example')
     assert.equal(doc1.shopGstin, '33ABCDE1234F1Z5')
     assert.equal(doc1.footerMessage, 'Happy Deepavali!')
 
     // UPDATE settings → subsequent documents change, immediately
-    assert.ok(updateShopSettings(t.db, { ...FULL_SHOP, shopName: 'KPR Burst Kingdom', shopAddress: '', gstin: '' }).ok)
+    assert.ok(updateShopSettings(t.db, { ...FULL_SHOP, shopName: 'KPR Burst Kingdom', shopAddress: '', shopEmail: '', gstin: '' }).ok)
     const doc2 = buildPrintDocument(getInvoice(t.db, inv.data.id)!, getPrintInfo(t.db))
     assert.equal(doc2.shopName, 'KPR Burst Kingdom')
     assert.equal(doc2.shopAddress, '', 'cleared address omitted cleanly — no literal placeholder')
+    assert.equal(doc2.shopEmail, '', 'cleared email leaves no placeholder text')
+    assert.ok(!doc2.shopEmail.includes('undefined') && !doc2.shopEmail.includes('null'))
     assert.equal(doc2.shopGstin, '')
-    assert.ok(!doc2.shopAddress.includes('undefined') && !doc2.shopAddress.includes('null'))
 
     // every print surface shares THIS one source (A4 + receipt both consume
     // PrintDocument built from getPrintInfo — asserted again below)
@@ -280,7 +313,7 @@ test('restore swaps the database and brings BACK the settings from the backup', 
   const liveFile = join(t.dir, 'test.db')
   try {
     // live db currently has shop A
-    assert.ok(updateShopSettings(t.db, { ...FULL_SHOP, shopName: 'Shop Current' }).ok)
+    assert.ok(updateShopSettings(t.db, { ...FULL_SHOP, shopName: 'Shop Current', shopEmail: 'current@shop.example' }).ok)
 
     // build a separate backup db whose shop settings differ (simulated old backup)
     const bakT = openTempDb()
@@ -302,6 +335,7 @@ test('restore swaps the database and brings BACK the settings from the backup', 
     const reopened = new Database(liveFile)
     try {
       assert.equal(getShopSettings(reopened).shopName, 'Shop From Backup')
+      assert.equal(getShopSettings(reopened).shopEmail, FULL_SHOP.shopEmail, 'restored backup brings back ITS saved email')
     } finally {
       reopened.close()
     }
@@ -309,7 +343,9 @@ test('restore swaps the database and brings BACK the settings from the backup', 
     // the safety copy preserved the previous settings
     const safety = new Database(safetyFile, { readonly: true })
     try {
-      assert.equal(getShopSettings(safety).shopName, 'Shop Current', 'pre-restore backup keeps the previously configured settings')
+      const prev = getShopSettings(safety)
+      assert.equal(prev.shopName, 'Shop Current', 'pre-restore backup keeps the previously configured settings')
+      assert.equal(prev.shopEmail, 'current@shop.example', '… including the previous email')
     } finally {
       safety.close()
     }

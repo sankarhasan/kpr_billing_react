@@ -12,7 +12,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { formatPaiseDisplay } from '@shared/products'
-import { computeLineAmounts, type Invoice } from '@shared/invoices'
+import { computeLineAmounts, normalizePaymentMethod, type Invoice } from '@shared/invoices'
 import { describePrintOutcome, type PrintFormat, type PrintWindowMode } from '@shared/print'
 
 interface Props {
@@ -79,7 +79,7 @@ export function InvoiceViewDialog({ open, onOpenChange, invoice }: Props) {
             </Badge>
           </DialogTitle>
           <DialogDescription>
-            {invoice.invoiceDate} · {invoice.paymentMode}
+            {invoice.invoiceDate} · Payment: {normalizePaymentMethod(invoice.paymentMode) ?? 'Not recorded'}
           </DialogDescription>
         </DialogHeader>
 

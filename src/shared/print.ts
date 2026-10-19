@@ -10,7 +10,7 @@
  *  - the printable document model is built ONLY from the saved invoice
  *    snapshots (never from current product prices or renderer data).
  */
-import { computeLineAmounts, formatInvoiceDate, type Invoice } from './invoices.ts'
+import { computeLineAmounts, formatInvoiceDate, normalizePaymentMethod, type Invoice } from './invoices.ts'
 import { formatPaiseDisplay } from './products.ts'
 
 // ─── Formats & request validation ──────────────────────────────────────
@@ -114,6 +114,7 @@ export interface PrintInfo {
   shopAddress: string
   shopPhone: string
   shopPhoneAlt: string
+  shopEmail: string
   /** Only printed when the shop has configured one; never affects totals. */
   gstin: string
   receiptFooter: string
@@ -125,6 +126,7 @@ export const DEFAULT_PRINT_INFO: PrintInfo = {
   shopAddress: '',
   shopPhone: '',
   shopPhoneAlt: '',
+  shopEmail: '',
   gstin: '',
   receiptFooter: ''
 }
@@ -165,10 +167,16 @@ export interface PrintDocument {
   hasAnyDiscount: boolean
   notes: string
   paymentMode: string
+  /**
+   * Payment label taken from the STORED invoice: 'CASH' | 'UPI' |
+   * 'Not recorded' for unknown legacy values — never a false 'UPI'.
+   */
+  paymentMethodDisplay: string
   shopName: string
   shopAddress: string
   shopPhone: string
   shopPhoneAlt: string
+  shopEmail: string
   /** '' when no GSTIN configured — layouts omit the line entirely. */
   shopGstin: string
   footerMessage: string
@@ -221,10 +229,12 @@ export function buildPrintDocument(invoice: Invoice, info: PrintInfo): PrintDocu
     hasAnyDiscount,
     notes: invoice.notes,
     paymentMode: invoice.paymentMode,
+    paymentMethodDisplay: normalizePaymentMethod(invoice.paymentMode) ?? 'Not recorded',
     shopName: info.shopName.trim() || DEFAULT_PRINT_INFO.shopName,
     shopAddress: info.shopAddress.trim(),
     shopPhone: info.shopPhone.trim(),
     shopPhoneAlt: info.shopPhoneAlt.trim(),
+    shopEmail: info.shopEmail.trim(),
     shopGstin: info.gstin.trim(),
     footerMessage: info.receiptFooter.trim()
   }

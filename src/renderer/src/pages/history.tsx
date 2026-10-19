@@ -166,7 +166,7 @@ export function HistoryPage() {
       </div>
 
       {/* Sales summary — computed in the MAIN process over ALL filtered rows */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardContent className="p-3">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total Invoices</div>
@@ -177,12 +177,6 @@ export function HistoryPage() {
           <CardContent className="p-3">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total Sales</div>
             <div className="text-lg font-bold tabular-nums">{money(summary.totalSalesPaise)}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-3">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total Discounts</div>
-            <div className="text-lg font-bold tabular-nums text-emerald-700">{money(summary.totalDiscountPaise)}</div>
           </CardContent>
         </Card>
         <Card>
