@@ -48,6 +48,9 @@ interface BillingState {
   lineErrors: Record<string, string>
   lastSaved: Invoice | null
   viewing: Invoice | null
+  /** KPR-INV-XXXX reserved for this draft BY THE MAIN PROCESS (display only). */
+  draftNumber: string | null
+  openingInvoice: boolean
 
   setWalkInMode: () => void
   selectExistingCustomer: (c: Customer) => void
@@ -63,6 +66,7 @@ interface BillingState {
   resetDraft: () => void
   openInvoiceByNumber: (number: string) => Promise<void>
   closeViewing: () => void
+  reserveDraftNumber: () => Promise<void>
 }
 
 export const useBillingStore = create<BillingState>((set, get) => ({
@@ -79,6 +83,8 @@ export const useBillingStore = create<BillingState>((set, get) => ({
   lineErrors: {},
   lastSaved: null,
   viewing: null,
+  draftNumber: null,
+  openingInvoice: false,
 
   setWalkInMode: () =>
     set({ customerMode: 'walkin', selectedCustomer: null, custName: '', custPhone: '', custAddress: '' }),
@@ -195,7 +201,10 @@ export const useBillingStore = create<BillingState>((set, get) => ({
         customerPhone: custPhone,
         customerAddress: custAddress,
         lines: normalized.map((l) => ({ productId: l.productId, quantity: l.quantity! })),
-        notes
+        notes,
+        // Reference to a main-process reservation — ignored unless the main
+        // process still holds this exact number reserved for a live draft.
+        draftNumber: get().draftNumber ?? undefined
       })
       if (!res.ok) {
         set({ saving: false, error: res.error.message, lineErrors: res.error.fields ?? {} })
@@ -211,8 +220,11 @@ export const useBillingStore = create<BillingState>((set, get) => ({
         selectedCustomer: null,
         custName: '',
         custPhone: '',
-        custAddress: ''
+        custAddress: '',
+        draftNumber: null // consumed by the save — reserve the next one below
       })
+      // Next draft gets a fresh main-process number.
+      void get().reserveDraftNumber()
       return true
     } catch (err) {
       set({ saving: false, error: err instanceof Error ? err.message : 'Saving failed.' })
@@ -220,6 +232,9 @@ export const useBillingStore = create<BillingState>((set, get) => ({
     }
   },
 
+  // Clears ONLY the unsaved draft. The reserved draft number stays live in
+  // the main-process registry (nothing was saved), so the cleared page keeps
+  // a consistent, still-unused invoice number. Saved invoices are untouched.
   resetDraft: () =>
     set({
       lines: [],
@@ -236,11 +251,13 @@ export const useBillingStore = create<BillingState>((set, get) => ({
     }),
 
   openInvoiceByNumber: async (number) => {
+    if (get().openingInvoice) return // ignore double-Enter / double-click
     const trimmed = number.trim()
     if (!trimmed) {
-      set({ lineErrors: { __open: 'Enter an invoice number.' } })
+      set({ lineErrors: { __open: 'Enter an invoice number or its last 4 digits.' } })
       return
     }
+    set({ openingInvoice: true })
     try {
       const res = await window.kpr.invoices.getByNumber(trimmed)
       if (res.ok) {
@@ -250,10 +267,25 @@ export const useBillingStore = create<BillingState>((set, get) => ({
       }
     } catch (err) {
       set({ lineErrors: { __open: err instanceof Error ? err.message : 'Lookup failed.' } })
+    } finally {
+      set({ openingInvoice: false })
     }
   },
 
-  closeViewing: () => set({ viewing: null })
+  closeViewing: () => set({ viewing: null }),
+
+  // The displayed draft number is ALWAYS allocated by the main process.
+  // The renderer never invents one; on save it sends this reference back and
+  // the main process only honours its own live reservation.
+  reserveDraftNumber: async () => {
+    if (get().draftNumber) return
+    try {
+      const res = await window.kpr.invoices.reserveDraftNumber()
+      if (res.ok) set({ draftNumber: res.data })
+    } catch {
+      /* badge falls back to "Reserving…" and save still allocates safely */
+    }
+  }
 }))
 
 /** Live totals for the draft (renderer preview; main re-computes on save). */

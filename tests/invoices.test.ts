@@ -13,14 +13,23 @@ import Database from 'better-sqlite3'
 
 import { openTempDb } from './_util.ts'
 import { migrateDatabase } from '../src/main/db/migrate.ts'
-import { createInvoice, getInvoice, getInvoiceByNumber } from '../src/main/db/invoices-repo.ts'
+import {
+  createInvoice,
+  getInvoice,
+  getInvoiceByNumber,
+  searchInvoice,
+  reserveInvoiceNumber,
+  releaseInvoiceNumber,
+  pendingReservationCount
+} from '../src/main/db/invoices-repo.ts'
 import { createProduct } from '../src/main/db/products-repo.ts'
 import { createCustomer, deleteCustomer, updateCustomer } from '../src/main/db/customers-repo.ts'
 import {
   computeInvoiceTotals,
   computeLineAmounts,
   validateInvoiceInput,
-  lineTotalPaise
+  lineTotalPaise,
+  parseInvoiceLookup
 } from '../src/shared/invoices.ts'
 import { LEGACY_V3_INVOICES_SQL } from '../src/main/db/schema.ts'
 
@@ -507,6 +516,210 @@ test('migration is idempotent and reopening the file keeps data', () => {
     assert.equal(reopened.prepare<[], { c: number }>('SELECT COUNT(*) c FROM invoices').get()?.c, 1)
   } finally {
     reopened.close()
+    t.cleanup()
+  }
+})
+
+// ─── Draft-number reservations (displayed number == saved number) ─────
+
+test('parseInvoiceLookup validates suffix / full / junk input', () => {
+  assert.deepEqual(parseInvoiceLookup('8540'), { ok: true, mode: 'suffix', digits: '8540' })
+  assert.deepEqual(parseInvoiceLookup('  8540\t'), { ok: true, mode: 'suffix', digits: '8540' })
+  assert.deepEqual(parseInvoiceLookup('KPR-INV-8540'), { ok: true, mode: 'full', value: 'KPR-INV-8540' })
+  assert.deepEqual(parseInvoiceLookup(' kpr-inv-8540 '), { ok: true, mode: 'full', value: 'kpr-inv-8540' })
+  assert.deepEqual(parseInvoiceLookup('KPR-1'), { ok: true, mode: 'full', value: 'KPR-1' }) // legacy
+  assert.ok(!parseInvoiceLookup('').ok)
+  assert.ok(!parseInvoiceLookup('   ').ok)
+  assert.ok(!parseInvoiceLookup('85').ok) // wrong suffix length
+  assert.ok(!parseInvoiceLookup('85400').ok) // digits but not 4
+  assert.ok(!parseInvoiceLookup('###!!').ok) // not a plausible number
+  assert.ok(!parseInvoiceLookup(undefined).ok)
+})
+
+test('reserveInvoiceNumber: format, uniqueness, skips used numbers, writes nothing', () => {
+  const t = setup()
+  try {
+    const before = t.db.prepare<[], { c: number }>('SELECT COUNT(*) c FROM invoices').get()?.c
+    t.db.exec("INSERT INTO invoices (invoice_number, customer_name) VALUES ('KPR-INV-5000', 'filler')")
+    const takenCount = t.db.prepare<[], { c: number }>('SELECT COUNT(*) c FROM invoices').get()?.c
+
+    const reserved: string[] = []
+    for (let i = 0; i < 25; i++) reserved.push(reserveInvoiceNumber(t.db))
+    assert.equal(new Set(reserved).size, 25, 'reservations must be unique')
+    for (const n of reserved) assert.match(n, INV_NUM_RE)
+    assert.ok(!reserved.includes('KPR-INV-5000'), 'a saved invoice number is never reserved')
+    // reserving never touches the invoices table
+    assert.equal(t.db.prepare<[], { c: number }>('SELECT COUNT(*) c FROM invoices').get()?.c, takenCount)
+    assert.notEqual(takenCount, before)
+
+    for (const n of reserved) assert.ok(releaseInvoiceNumber(n))
+    assert.equal(pendingReservationCount(), 0)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('createInvoice honours a live main-process reservation (displayed == saved)', () => {
+  const t = setup()
+  try {
+    const p = seedProduct(t, 'D1', 2500)
+    const draft = reserveInvoiceNumber(t.db)
+    const res = createInvoice(t.db, { customerId: null, lines: [{ productId: p.id, quantity: 2 }], notes: '', draftNumber: draft })
+    assert.ok(res.ok)
+    assert.equal(res.data.invoiceNumber, draft, 'saved number must match the displayed draft number')
+    assert.ok(getInvoiceByNumber(t.db, draft))
+    // the reservation was consumed by the save
+    assert.equal(pendingReservationCount(), 0)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('failed save keeps the draft reservation — retry saves the SAME number', () => {
+  const t = setup()
+  try {
+    const p = seedProduct(t, 'D3', 1500)
+    const draft = reserveInvoiceNumber(t.db)
+
+    // Save fails on a validation error (product archived).
+    t.db.prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(p.id)
+    const failed = createInvoice(t.db, { customerId: null, lines: [{ productId: p.id, quantity: 1 }], notes: '', draftNumber: draft })
+    assert.ok(!failed.ok)
+    assert.equal(pendingReservationCount(), 1, 'reservation must survive a failed save')
+
+    // Re-activating and retrying keeps the exact displayed draft number.
+    t.db.prepare('UPDATE products SET is_active = 1 WHERE id = ?').run(p.id)
+    const retry = createInvoice(t.db, { customerId: null, lines: [{ productId: p.id, quantity: 1 }], notes: '', draftNumber: draft })
+    assert.ok(retry.ok)
+    assert.equal(retry.data.invoiceNumber, draft)
+    assert.equal(pendingReservationCount(), 0)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('renderer-forged and released draft numbers are never trusted', () => {
+  const t = setup()
+  try {
+    const p = seedProduct(t, 'D2', 1000)
+    // An already-saved number supplied by a compromised renderer: must NOT clash.
+    t.db.exec("INSERT INTO invoices (invoice_number, customer_name) VALUES ('KPR-INV-4444', 'existing')")
+    const forged = createInvoice(t.db, {
+      customerId: null,
+      lines: [{ productId: p.id, quantity: 1 }],
+      notes: '',
+      draftNumber: 'KPR-INV-4444'
+    })
+    assert.ok(forged.ok)
+    assert.notEqual(forged.data.invoiceNumber, 'KPR-INV-4444', 'unreserved numbers are ignored')
+    assert.match(forged.data.invoiceNumber, INV_NUM_RE)
+
+    // A live reservation is never stolen by a save that does not reference it.
+    const held = reserveInvoiceNumber(t.db)
+    const other = createInvoice(t.db, { customerId: null, lines: [{ productId: p.id, quantity: 1 }], notes: '' })
+    assert.ok(other.ok)
+    assert.notEqual(other.data.invoiceNumber, held, 'generator must skip reserved numbers')
+    assert.ok(releaseInvoiceNumber(held))
+    assert.equal(releaseInvoiceNumber(held), false, 'double release is a no-op')
+
+    // A released number is no longer a live reservation: it is not honoured
+    // as "the displayed draft number" — the save still succeeds via fallback.
+    const released = createInvoice(t.db, {
+      customerId: null,
+      lines: [{ productId: p.id, quantity: 1 }],
+      notes: '',
+      draftNumber: held
+    })
+    assert.ok(released.ok)
+    assert.match(released.data.invoiceNumber, INV_NUM_RE)
+  } finally {
+    t.cleanup()
+  }
+})
+
+// ─── Reopen search: full number OR last-4-digit suffix ────────────────
+
+test('searchInvoice: full number (exact + case-insensitive + whitespace)', () => {
+  const t = setup()
+  try {
+    const p = seedProduct(t, 'Q1', 1000)
+    const draft = reserveInvoiceNumber(t.db)
+    const res = createInvoice(t.db, { customerId: null, lines: [{ productId: p.id, quantity: 4 }], notes: 'x', draftNumber: draft })
+    assert.ok(res.ok)
+    const digits = draft.slice(-4)
+
+    for (const input of [draft, draft.toLowerCase(), `  ${draft}  `]) {
+      const found = searchInvoice(t.db, input)
+      assert.ok(found.ok, `lookup "${input}" should succeed`)
+      assert.equal(found.data.invoiceNumber, draft)
+      assert.equal(found.data.lines.length, 1)
+      assert.equal(found.data.lines[0].lineTotalPaise, 4000) // snapshot intact
+    }
+    // suffix form
+    const suffix = searchInvoice(t.db, ` ${digits} `)
+    assert.ok(suffix.ok)
+    assert.equal(suffix.data.invoiceNumber, draft)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('searchInvoice: legacy numbers stay openable by full number', () => {
+  const t = setup()
+  try {
+    t.db.exec("INSERT INTO invoices (invoice_number, customer_name, subtotal_paise, total_paise) VALUES ('KPR-1', 'Walk-in Customer', 37600, 37600)")
+    const found = searchInvoice(t.db, 'kpr-1')
+    assert.ok(found.ok)
+    assert.equal(found.data.invoiceNumber, 'KPR-1')
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('searchInvoice: missing suffix reports "No invoice found for NNNN"', () => {
+  const t = setup()
+  try {
+    const res = searchInvoice(t.db, '1234')
+    assert.ok(!res.ok)
+    assert.equal(res.error.code, 'NOT_FOUND')
+    assert.equal(res.error.message, 'No invoice found for 1234')
+    const missingFull = searchInvoice(t.db, 'KPR-INV-1234')
+    assert.ok(!missingFull.ok)
+    assert.equal(missingFull.error.code, 'NOT_FOUND')
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('searchInvoice: ambiguous suffix lists candidates instead of opening one', () => {
+  const t = setup()
+  try {
+    t.db.exec(
+      "INSERT INTO invoices (invoice_number, customer_name) VALUES ('KPR-INV-8540', 'A'), ('OLD-8540', 'B')"
+    )
+    const res = searchInvoice(t.db, '8540')
+    assert.ok(!res.ok)
+    assert.equal(res.error.code, 'AMBIGUOUS')
+    assert.match(res.error.message, /KPR-INV-8540/)
+    assert.match(res.error.message, /OLD-8540/)
+    // the full number disambiguates
+    const exact = searchInvoice(t.db, 'KPR-INV-8540')
+    assert.ok(exact.ok)
+    assert.equal(exact.data.customerName, 'A')
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('searchInvoice: invalid input is rejected with a clear message', () => {
+  const t = setup()
+  try {
+    for (const bad of ['', '   ', '85', '854000', '$$%%', 'a'.repeat(200)]) {
+      const res = searchInvoice(t.db, bad)
+      assert.ok(!res.ok, `"${bad}" must be rejected`)
+      assert.equal(res.error.code, 'VALIDATION')
+    }
+  } finally {
     t.cleanup()
   }
 })

@@ -7,7 +7,11 @@
  *  - subtotal / discount / round-off / total recalculated with integer paise
  *    via the shared computeInvoiceTotals engine
  *  - invoice number = KPR-INV- + a cryptographically-random unused 4-digit
- *    suffix, allocated inside the same transaction (UNIQUE is the guard)
+ *    suffix, allocated inside the same transaction (UNIQUE is the guard);
+ *    draft numbers shown in the UI are RESERVED in this process first and
+ *    only honoured on save when the reservation is still live
+ *  - reopen lookup (full number or last-4-digit suffix) runs here with
+ *    parameterized SQL and returns one / none / many (ambiguity) results
  *  - customer + product snapshots copied into the invoice rows
  */
 import type Database from 'better-sqlite3'
@@ -15,6 +19,7 @@ import { randomInt } from 'node:crypto'
 import {
   validateInvoiceInput,
   computeInvoiceTotals,
+  parseInvoiceLookup,
   WALK_IN_NAME,
   type Invoice,
   type InvoiceLine
@@ -29,6 +34,65 @@ const NUMBER_MIN = 1000
 const NUMBER_SPAN = 9000 // 1000..9999
 
 class InvoiceNumberExhausted extends Error {}
+
+const DRAFT_NUMBER_RE = /^KPR-INV-\d{4}$/
+
+// ─── Draft-number reservations (main-process only, per app session) ────
+// Numbers shown on a draft are RESERVED here. Abandoned drafts are safe:
+// reservations live only in this process and expire after the TTL, so a
+// number is never handed out twice while still reserved, and nothing is
+// ever WRITTEN to the database just to reserve a draft number.
+const RESERVATION_TTL_MS = 60 * 60 * 1000 // 1 hour
+const reservedNumbers = new Map<string, number>() // number -> expiry timestamp
+
+function pruneReservations(now: number): void {
+  for (const [num, expiry] of reservedNumbers) {
+    if (expiry <= now) reservedNumbers.delete(num)
+  }
+}
+
+function invoiceNumberTaken(db: Db, number: string): boolean {
+  return !!db
+    .prepare<[string], { x: number }>('SELECT 1 AS x FROM invoices WHERE invoice_number = ?')
+    .get(number)
+}
+
+/** Reserve an unused KPR-INV-XXXX number for the current draft. */
+export function reserveInvoiceNumber(db: Db): string {
+  const now = Date.now()
+  pruneReservations(now)
+  for (let attempt = 0; attempt < NUMBER_SPAN; attempt++) {
+    const candidate = `${INVOICE_NUMBER_PREFIX}${NUMBER_MIN + randomInt(0, NUMBER_SPAN)}`
+    if (!reservedNumbers.has(candidate) && !invoiceNumberTaken(db, candidate)) {
+      reservedNumbers.set(candidate, now + RESERVATION_TTL_MS)
+      return candidate
+    }
+  }
+  throw new InvoiceNumberExhausted()
+}
+
+/** Explicitly give back a reserved number (true when this process held it). */
+export function releaseInvoiceNumber(number: string): boolean {
+  return reservedNumbers.delete(number)
+}
+
+/**
+ * A draft number supplied by the renderer is honoured ONLY if this process
+ * reserved it, it has not expired, and it is still unused in the database.
+ * The reservation is released by createInvoice AFTER a successful save, so a
+ * failed save keeps the displayed draft number valid for a retry.
+ */
+function hasLiveReservation(db: Db, number: string): boolean {
+  const expiry = reservedNumbers.get(number)
+  if (expiry === undefined || expiry <= Date.now()) return false
+  return !invoiceNumberTaken(db, number)
+}
+
+/** Test helper: number of live (unexpired) reservations. */
+export function pendingReservationCount(): number {
+  pruneReservations(Date.now())
+  return reservedNumbers.size
+}
 
 interface InvoiceRow {
   id: number
@@ -159,12 +223,66 @@ export function getInvoiceByNumber(db: Db, invoiceNumber: string): Invoice | nul
   return row ? mapInvoice(row, linesFor(db, row.id)) : null
 }
 
+/** Case-insensitive exact-number read (legacy numbers included). */
+function getInvoiceByNumberNoCase(db: Db, invoiceNumber: string): Invoice | null {
+  const row = db
+    .prepare<[{ n: string }], InvoiceRow>(
+      `SELECT ${INVOICE_COLS} FROM invoices WHERE invoice_number = @n COLLATE NOCASE`
+    )
+    .get({ n: invoiceNumber })
+  return row ? mapInvoice(row, linesFor(db, row.id)) : null
+}
+
+/**
+ * Reopen an invoice from an untrusted lookup string: either the last four
+ * digits of the number OR the full invoice number (case-insensitive, legacy
+ * compatible). Returns exactly one invoice, a NOT_FOUND error, an AMBIGUOUS
+ * error listing the candidates, or a VALIDATION error for bad input.
+ * Parameterized SQL only; the '%' wildcard is built exclusively from four
+ * validated ASCII digits.
+ */
+export function searchInvoice(db: Db, rawInput: unknown): IpcResult<Invoice> {
+  const parsed = parseInvoiceLookup(rawInput)
+  if (!parsed.ok) {
+    return ipcErr<Invoice>('VALIDATION', parsed.message)
+  }
+
+  if (parsed.mode === 'suffix') {
+    const matches = db
+      .prepare<[{ p: string }], { invoice_number: string }>(
+        `SELECT invoice_number FROM invoices WHERE invoice_number LIKE @p ORDER BY invoice_number LIMIT 6`
+      )
+      .all({ p: `%${parsed.digits}` })
+    if (matches.length === 0) {
+      return ipcErr<Invoice>('NOT_FOUND', `No invoice found for ${parsed.digits}`)
+    }
+    if (matches.length > 1) {
+      const list = matches.map((m) => m.invoice_number).join(', ')
+      return ipcErr<Invoice>(
+        'AMBIGUOUS',
+        `Multiple invoices end with ${parsed.digits}: ${list}. Enter the full invoice number.`
+      )
+    }
+    const invoice = getInvoiceByNumber(db, matches[0].invoice_number)
+    return invoice ? ipcOk(invoice) : ipcErr<Invoice>('NOT_FOUND', `No invoice found for ${parsed.digits}`)
+  }
+
+  const invoice = getInvoiceByNumberNoCase(db, parsed.value)
+  if (!invoice) {
+    return ipcErr<Invoice>('NOT_FOUND', `No invoice found for ${parsed.value}`)
+  }
+  return ipcOk(invoice)
+}
+
 /** Allocate an unused KPR-INV-XXXX number (cryptographic randomness). */
 function generateInvoiceNumber(db: Db): string {
-  const exists = db.prepare<[string], { x: number }>('SELECT 1 AS x FROM invoices WHERE invoice_number = ?')
+  const now = Date.now()
+  pruneReservations(now)
   for (let attempt = 0; attempt < NUMBER_SPAN; attempt++) {
     const candidate = `${INVOICE_NUMBER_PREFIX}${NUMBER_MIN + randomInt(0, NUMBER_SPAN)}`
-    if (!exists.get(candidate)) return candidate
+    // Never steal a number that is reserved for an open draft elsewhere.
+    if (reservedNumbers.has(candidate)) continue
+    if (!invoiceNumberTaken(db, candidate)) return candidate
   }
   throw new InvoiceNumberExhausted()
 }
@@ -241,6 +359,14 @@ export function createInvoice(db: Db, rawInput: unknown): IpcResult<Invoice> {
 
   // Recalculate ALL money with integer paise — renderer values ignored.
   const roundOffEnabled = getSettingValue(db, 'round_off_enabled') === '1'
+  // Draft number shown to the user: honoured only when this process still
+  // holds a live reservation for it (validated against the DB too).
+  let reservedDraft: string | null = null
+  const rawDraftNumber = (rawInput as { draftNumber?: unknown } | null)?.draftNumber
+  if (typeof rawDraftNumber === 'string' && DRAFT_NUMBER_RE.test(rawDraftNumber)) {
+    if (hasLiveReservation(db, rawDraftNumber)) reservedDraft = rawDraftNumber
+  }
+
   const totals = computeInvoiceTotals(
     resolved.map(({ product, quantity }) => ({
       originalRatePaise: product.rate_paise,
@@ -272,7 +398,9 @@ export function createInvoice(db: Db, rawInput: unknown): IpcResult<Invoice> {
   `)
 
   const tx = db.transaction((): number => {
-    const invoiceNumber = generateInvoiceNumber(db)
+    // Honour ONLY a main-process-reserved draft number; anything else the
+    // renderer sends is ignored and a fresh number is allocated instead.
+    const invoiceNumber = reservedDraft ?? generateInvoiceNumber(db)
     const info = insertInvoice.run({
       number: invoiceNumber,
       customerId: customer.id,
@@ -319,6 +447,8 @@ export function createInvoice(db: Db, rawInput: unknown): IpcResult<Invoice> {
     }
     throw err
   }
+  // Save succeeded: the draft reservation is now consumed by the invoice.
+  if (reservedDraft) reservedNumbers.delete(reservedDraft)
 
   const created = getInvoice(db, invoiceId)
   if (!created) return ipcErr<Invoice>('DB_ERROR', 'Invoice saved but could not be re-read.')

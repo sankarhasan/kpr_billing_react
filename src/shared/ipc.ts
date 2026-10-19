@@ -23,7 +23,9 @@ export const IPC_CHANNELS = {
   CUSTOMERS_DELETE: 'customers:delete',
   INVOICES_CREATE: 'invoices:create',
   INVOICES_GET: 'invoices:getById',
-  INVOICES_GET_BY_NUMBER: 'invoices:getByNumber'
+  INVOICES_GET_BY_NUMBER: 'invoices:getByNumber',
+  INVOICES_RESERVE_NUMBER: 'invoices:reserveNumber',
+  INVOICES_RELEASE_NUMBER: 'invoices:releaseNumber'
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

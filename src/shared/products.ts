@@ -106,6 +106,7 @@ export type IpcErrorCode =
   | 'IO_ERROR'
   | 'FILE_TOO_LARGE'
   | 'CANCELLED'
+  | 'AMBIGUOUS'
 
 export interface IpcError {
   code: IpcErrorCode

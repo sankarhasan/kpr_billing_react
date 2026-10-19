@@ -64,8 +64,14 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.INVOICES_CREATE, { input }),
     getById: (id: number): Promise<IpcResult<Invoice>> =>
       ipcRenderer.invoke(IPC_CHANNELS.INVOICES_GET, { id }),
+    /** Full number OR last-4-digit suffix — resolved in the main process. */
     getByNumber: (number: string): Promise<IpcResult<Invoice>> =>
-      ipcRenderer.invoke(IPC_CHANNELS.INVOICES_GET_BY_NUMBER, { number })
+      ipcRenderer.invoke(IPC_CHANNELS.INVOICES_GET_BY_NUMBER, { number }),
+    /** Reserve the number shown on the current draft (main process decides). */
+    reserveDraftNumber: (): Promise<IpcResult<string>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.INVOICES_RESERVE_NUMBER),
+    releaseDraftNumber: (number: string): Promise<IpcResult<{ released: boolean }>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.INVOICES_RELEASE_NUMBER, { number })
   },
 
   files: {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Eye,
   Minus,
@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { InvoiceViewDialog } from '@/components/billing/invoice-view-dialog'
+import { ClearDraftDialog } from '@/components/billing/clear-draft-dialog'
 import { draftTotals, parseQuantity, useBillingStore } from '@/store/billing-store'
 import { formatPaiseDisplay } from '@shared/products'
 import { computeLineAmounts } from '@shared/invoices'
@@ -38,6 +39,8 @@ export function BillingPage() {
     lineErrors,
     lastSaved,
     viewing,
+    draftNumber,
+    openingInvoice,
     setWalkInMode,
     selectExistingCustomer,
     setCustField,
@@ -51,7 +54,8 @@ export function BillingPage() {
     save,
     resetDraft,
     openInvoiceByNumber,
-    closeViewing
+    closeViewing,
+    reserveDraftNumber
   } = useBillingStore()
 
   // ── product search + keyboard navigation ──
@@ -59,8 +63,12 @@ export function BillingPage() {
   const [results, setResults] = useState<Product[]>([])
   const [highlight, setHighlight] = useState(-1)
   const searchRef = useRef<HTMLInputElement | null>(null)
+  const optionRefs = useRef<(HTMLLIElement | null)[]>([])
   const qtyRefs = useRef<Record<number, HTMLInputElement | null>>({})
   const [focusTarget, setFocusTarget] = useState<'search' | number | null>(null)
+
+  // ── clear-draft confirmation ──
+  const [clearOpen, setClearOpen] = useState(false)
 
   // ── customer search (existing mode) ──
   const [custQuery, setCustQuery] = useState('')
@@ -73,6 +81,19 @@ export function BillingPage() {
   useEffect(() => {
     searchRef.current?.focus()
   }, [])
+
+  // The DRAFT number is allocated by the main process (never invented here).
+  useEffect(() => {
+    void reserveDraftNumber()
+  }, [reserveDraftNumber])
+
+  // Keep the keyboard-highlighted result visible: scroll the dropdown only
+  // (block: 'nearest' never scrolls the page when the item is already shown).
+  useLayoutEffect(() => {
+    if (highlight >= 0) {
+      optionRefs.current[highlight]?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [highlight, results])
 
   // Debounced product search.
   useEffect(() => {
@@ -203,18 +224,30 @@ export function BillingPage() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <Badge variant="outline" className="text-xs">
-            Invoice number is generated automatically
+          <Badge variant="outline" className="text-xs font-mono" title="Reserved by the main process for this draft">
+            {draftNumber ? `Current Invoice: ${draftNumber}` : 'Reserving invoice number…'}
           </Badge>
           <Input
             value={openNumber}
             onChange={(e) => setOpenNumber(e.target.value)}
-            placeholder="Reopen invoice no."
-            className="h-8 w-40 font-mono text-xs"
-            aria-label="Reopen saved invoice by number"
+            onKeyDown={(e) => {
+              // Enter performs the LOOKUP only — it must never save the draft.
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void openInvoiceByNumber(openNumber)
+              }
+            }}
+            placeholder="Find: 8540 or KPR-INV-8540"
+            className="h-8 w-48 font-mono text-xs"
+            aria-label="Find saved invoice by number or last 4 digits"
           />
-          <Button variant="outline" size="sm" onClick={() => void openInvoiceByNumber(openNumber)} disabled={!openNumber.trim()}>
-            <Eye /> Open
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void openInvoiceByNumber(openNumber)}
+            disabled={!openNumber.trim() || openingInvoice}
+          >
+            {openingInvoice ? <Loader2 className="size-4 animate-spin" /> : <Eye />} Open
           </Button>
         </div>
       </div>
@@ -347,13 +380,21 @@ export function BillingPage() {
                 role="combobox"
                 aria-expanded={dropdownOpen}
                 aria-controls="product-results"
+                aria-activedescendant={dropdownOpen && highlight >= 0 ? `product-opt-${highlight}` : undefined}
               />
               {dropdownOpen && (
-                <ul id="product-results" className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-popover shadow-md">
+                <ul
+                  id="product-results"
+                  role="listbox"
+                  className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-popover shadow-md"
+                >
                   {results.map((p, i) => (
-                    <li key={p.id}>
+                    <li key={p.id} ref={(el) => { optionRefs.current[i] = el }}>
                       <button
                         type="button"
+                        id={`product-opt-${i}`}
+                        role="option"
+                        aria-selected={i === highlight}
                         onMouseEnter={() => setHighlight(i)}
                         onClick={() => chooseProduct(p)}
                         className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm ${i === highlight ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
@@ -507,7 +548,7 @@ export function BillingPage() {
                 {saving ? <Loader2 className="size-4 animate-spin" /> : <Plus />}
                 {saving ? 'Saving…' : 'Save Invoice'}
               </Button>
-              <Button variant="ghost" onClick={resetDraft} disabled={saving}>
+              <Button variant="ghost" onClick={() => setClearOpen(true)} disabled={saving}>
                 Clear draft
               </Button>
             </div>
@@ -516,6 +557,23 @@ export function BillingPage() {
       </div>
 
       <InvoiceViewDialog open={viewing !== null} onOpenChange={(o) => !o && closeViewing()} invoice={viewing} />
+
+      <ClearDraftDialog
+        open={clearOpen}
+        onOpenChange={setClearOpen}
+        onConfirm={() => {
+          // Explicit confirmation only: reset the draft + all transient
+          // selection/search state. Database, saved invoices and settings are
+          // untouched, and the reserved draft number stays consistent.
+          resetDraft()
+          setQuery('')
+          setResults([])
+          setHighlight(-1)
+          setCustQuery('')
+          setCustResults([])
+          setFocusTarget('search')
+        }}
+      />
     </div>
   )
 }

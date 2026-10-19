@@ -143,6 +143,45 @@ export interface InvoiceCreateInput {
   customerAddress?: string
   lines: InvoiceLineInput[]
   notes?: string
+  /**
+   * Draft number previously reserved BY THE MAIN PROCESS and shown to the
+   * user. Never trusted: it is only honoured if the main process still holds
+   * a live reservation for exactly this number.
+   */
+  draftNumber?: string
+}
+
+// ─── Invoice lookup (reopen by full number OR last-4-digit suffix) ─────
+
+export const INVOICE_SUFFIX_RE = /^\d{4}$/
+export const INVOICE_LOOKUP_FULL_RE = /^[A-Za-z][A-Za-z0-9 _/.-]{0,59}$/
+
+export type InvoiceLookup =
+  | { ok: true; mode: 'suffix'; digits: string }
+  | { ok: true; mode: 'full'; value: string }
+  | { ok: false; message: string }
+
+/**
+ * Parse an untrusted invoice-lookup string from the UI.
+ * Accepts: exactly 4 digits (suffix search) or a full invoice number
+ * (letter-led, case-insensitive, legacy numbers allowed). Whitespace around
+ * the input is ignored; everything else is rejected with a clear message.
+ */
+export function parseInvoiceLookup(raw: unknown): InvoiceLookup {
+  const trimmed = typeof raw === 'string' ? raw.trim() : ''
+  if (!trimmed) {
+    return { ok: false, message: 'Enter an invoice number or its last 4 digits.' }
+  }
+  if (INVOICE_SUFFIX_RE.test(trimmed)) {
+    return { ok: true, mode: 'suffix', digits: trimmed }
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return { ok: false, message: 'Suffix search needs exactly 4 digits — enter the last 4 digits or the full invoice number.' }
+  }
+  if (INVOICE_LOOKUP_FULL_RE.test(trimmed)) {
+    return { ok: true, mode: 'full', value: trimmed }
+  }
+  return { ok: false, message: 'Invalid invoice number. Enter the full number (e.g. KPR-INV-8540) or its last 4 digits.' }
 }
 
 const MAX_LINES = 200

@@ -14,6 +14,7 @@ import * as customersRepo from './db/customers-repo'
 import * as invoicesRepo from './db/invoices-repo'
 import {
   ipcErr,
+  ipcOk,
   type IpcResult,
   type ProductListParams,
   type DuplicateStrategy,
@@ -266,12 +267,24 @@ export function registerIpcHandlers(): void {
 
   trustedHandle(IPC_CHANNELS.INVOICES_GET_BY_NUMBER, (args) => {
     const o = requireObject(args[0], IPC_CHANNELS.INVOICES_GET_BY_NUMBER)
+    const number = validString(o.number, 120, 'number') ?? ''
+    // Lookup (full number or last-4-digit suffix) runs entirely here;
+    // validation + ambiguity handling live in the repository.
+    return invoicesRepo.searchInvoice(getDatabase(), number)
+  })
+
+  trustedHandle(IPC_CHANNELS.INVOICES_RESERVE_NUMBER, (args) => {
+    expectNoArgs(IPC_CHANNELS.INVOICES_RESERVE_NUMBER, args)
+    return ipcOk(invoicesRepo.reserveInvoiceNumber(getDatabase()))
+  })
+
+  trustedHandle(IPC_CHANNELS.INVOICES_RELEASE_NUMBER, (args) => {
+    const o = requireObject(args[0], IPC_CHANNELS.INVOICES_RELEASE_NUMBER)
     const number = validString(o.number, 60, 'number')?.trim()
-    if (!number) {
-      throw new ValidationError('INVALID_PARAMS', 'A valid invoice number is required.')
+    if (!number || !/^KPR-INV-\d{4}$/.test(number)) {
+      throw new ValidationError('INVALID_PARAMS', 'A valid draft invoice number is required.')
     }
-    const invoice = invoicesRepo.getInvoiceByNumber(getDatabase(), number)
-    return invoice ? { ok: true, data: invoice } : ipcErr('NOT_FOUND', `No invoice found with number "${number}".`)
+    return ipcOk({ released: invoicesRepo.releaseInvoiceNumber(number) })
   })
 
   // ── Bulk CSV import (single transaction inside the repo) ──
