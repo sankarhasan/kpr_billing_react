@@ -1,1 +1,0 @@
-import Database from 'better-sqlite3'; const db=new Database('d:/KPR BILLING React/kpr_billing_desktop/.ui-verify/preserved-user-import/kpr-billing.db',{readonly:true}); console.log('preserved throwaway DB products:', db.prepare('SELECT COUNT(*) c FROM products').get().c); db.close()

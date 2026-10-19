@@ -6,6 +6,9 @@
  * Version map:
  *   0 -> fresh DB or Phase 1 DB (v1 products table or no products table)
  *   2 -> Phase 2 schema (v2 products with paise money, no stock columns)
+ *   3 -> Phase 3 schema (customers gain notes + archived_at)
+ *   4 -> Phase 4 schema (invoices/invoice_items rebuilt: paise money + snapshots)
+ *   5 -> Phase 4 improve (invoices gain round_off_paise)
  */
 import type Database from 'better-sqlite3'
 import {
@@ -87,12 +90,132 @@ function migrateProductsV1ToV2(db: DatabaseInstance): void {
   }
 }
 
+/**
+ * v2 -> v3 customers migration: add notes + archived_at columns.
+ * Purely additive (ALTER TABLE ADD COLUMN) — existing customer rows and
+ * all other tables are untouched. Idempotent: skips columns that already
+ * exist (fresh databases get them from BASE_TABLES_SQL).
+ */
+function migrateCustomersV2ToV3(db: DatabaseInstance): void {
+  const cols = columnNames(db, 'customers')
+  if (!cols.includes('notes')) {
+    db.exec(`ALTER TABLE customers ADD COLUMN notes TEXT NOT NULL DEFAULT ''`)
+  }
+  if (!cols.includes('archived_at')) {
+    db.exec('ALTER TABLE customers ADD COLUMN archived_at TEXT')
+  }
+}
+
+/**
+ * v3 -> v4 invoice migration. Rebuilds invoices + invoice_items when the
+ * old REAL-rupee columns are detected:
+ *  - REAL amounts -> INTEGER paise (x100, rounded)
+ *  - customer name/phone/address snapshot backfilled from the customers table
+ *  - product_code snapshot backfilled from the products table
+ * Existing rows are preserved row-for-row (ids, dates, numbers).
+ */
+function migrateInvoicesV3ToV4(db: DatabaseInstance): void {
+  const invCols = columnNames(db, 'invoices')
+  const itemCols = columnNames(db, 'invoice_items')
+  if (invCols.includes('subtotal_paise') && itemCols.includes('unit_price_paise')) return
+
+  db.pragma('foreign_keys = OFF')
+  try {
+    const run = db.transaction(() => {
+      if (!invCols.includes('subtotal_paise')) {
+        db.exec(`
+          CREATE TABLE invoices_new (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_number    TEXT    NOT NULL UNIQUE,
+            customer_id       INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+            customer_name     TEXT    NOT NULL DEFAULT 'Walk-in Customer',
+            customer_phone    TEXT    NOT NULL DEFAULT '',
+            customer_address  TEXT    NOT NULL DEFAULT '',
+            invoice_date      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+            subtotal_paise    INTEGER NOT NULL DEFAULT 0 CHECK (subtotal_paise >= 0),
+            discount_paise    INTEGER NOT NULL DEFAULT 0 CHECK (discount_paise >= 0),
+            tax_amount_paise  INTEGER NOT NULL DEFAULT 0 CHECK (tax_amount_paise >= 0),
+            total_paise       INTEGER NOT NULL DEFAULT 0 CHECK (total_paise >= 0),
+            payment_mode      TEXT    NOT NULL DEFAULT 'cash',
+            status            TEXT    NOT NULL DEFAULT 'completed',
+            notes             TEXT    NOT NULL DEFAULT '',
+            created_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+          );
+          INSERT INTO invoices_new (
+            id, invoice_number, customer_id, customer_name, customer_phone, customer_address,
+            invoice_date, subtotal_paise, discount_paise, tax_amount_paise, total_paise,
+            payment_mode, status, notes, created_at
+          )
+          SELECT
+            i.id, i.invoice_number, i.customer_id,
+            COALESCE((SELECT c.name FROM customers c WHERE c.id = i.customer_id), 'Walk-in Customer'),
+            COALESCE((SELECT c.phone FROM customers c WHERE c.id = i.customer_id), ''),
+            COALESCE((SELECT c.address FROM customers c WHERE c.id = i.customer_id), ''),
+            i.invoice_date,
+            CAST(ROUND(i.subtotal * 100) AS INTEGER),
+            CAST(ROUND(i.discount * 100) AS INTEGER),
+            CAST(ROUND(i.tax_amount * 100) AS INTEGER),
+            CAST(ROUND(i.total * 100) AS INTEGER),
+            i.payment_mode, i.status, i.notes, i.created_at
+          FROM invoices i;
+          DROP TABLE invoices;
+          ALTER TABLE invoices_new RENAME TO invoices;
+          CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices (invoice_date);
+          CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices (customer_id);
+          CREATE INDEX IF NOT EXISTS idx_invoices_number ON invoices (invoice_number);
+        `)
+      }
+
+      if (!itemCols.includes('unit_price_paise')) {
+        db.exec(`
+          CREATE TABLE invoice_items_new (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_id            INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+            product_id            INTEGER REFERENCES products(id) ON DELETE SET NULL,
+            product_code          TEXT    NOT NULL DEFAULT '',
+            product_name          TEXT    NOT NULL,
+            quantity              REAL    NOT NULL DEFAULT 1 CHECK (quantity > 0),
+            unit_price_paise      INTEGER NOT NULL DEFAULT 0 CHECK (unit_price_paise >= 0),
+            line_total_paise      INTEGER NOT NULL DEFAULT 0 CHECK (line_total_paise >= 0),
+            original_rate_paise   INTEGER NOT NULL DEFAULT 0,
+            discount_type         TEXT    NOT NULL DEFAULT 'none',
+            discount_percent      REAL    NOT NULL DEFAULT 0,
+            discount_amount_paise INTEGER NOT NULL DEFAULT 0
+          );
+          INSERT INTO invoice_items_new (
+            id, invoice_id, product_id, product_code, product_name, quantity,
+            unit_price_paise, line_total_paise
+          )
+          SELECT
+            it.id, it.invoice_id, it.product_id,
+            COALESCE((SELECT p.product_code FROM products p WHERE p.id = it.product_id), ''),
+            it.product_name, it.quantity,
+            CAST(ROUND(it.unit_price * 100) AS INTEGER),
+            CAST(ROUND(it.line_total * 100) AS INTEGER)
+          FROM invoice_items it;
+          DROP TABLE invoice_items;
+          ALTER TABLE invoice_items_new RENAME TO invoice_items;
+          CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items (invoice_id);
+        `)
+      }
+    })
+    run()
+  } finally {
+    db.pragma('foreign_keys = ON')
+    const violations = db.pragma('foreign_key_check') as unknown[]
+    if (violations.length > 0) {
+      console.error('[migrate] foreign_key_check violations after invoice migration:', violations)
+    }
+  }
+}
+
 export function migrateDatabase(db: DatabaseInstance): void {
   // Base (customers/invoices/invoice_items/settings) — idempotent.
   db.exec(BASE_TABLES_SQL)
 
   const version = db.pragma('user_version', { simple: true }) as number
-  if (version < SCHEMA_VERSION) {
+
+  if (version < 2) {
     if (tableExists(db, 'products')) {
       const cols = columnNames(db, 'products')
       if (!cols.includes('product_code')) {
@@ -102,6 +225,24 @@ export function migrateDatabase(db: DatabaseInstance): void {
       db.exec(PRODUCTS_V2_TABLE_SQL)
       db.exec(PRODUCTS_V2_INDEXES_SQL)
     }
+  }
+
+  if (version < 3) {
+    migrateCustomersV2ToV3(db)
+  }
+
+  if (version < 4) {
+    migrateInvoicesV3ToV4(db)
+  }
+
+  if (version < 5) {
+    const invCols = columnNames(db, 'invoices')
+    if (!invCols.includes('round_off_paise')) {
+      db.exec('ALTER TABLE invoices ADD COLUMN round_off_paise INTEGER NOT NULL DEFAULT 0')
+    }
+  }
+
+  if (version < SCHEMA_VERSION) {
     db.pragma(`user_version = ${SCHEMA_VERSION}`)
   }
 

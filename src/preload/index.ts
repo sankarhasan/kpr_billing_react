@@ -16,6 +16,13 @@ import type {
   ProductImportSummary,
   DuplicateStrategy
 } from '@shared/products'
+import type {
+  Customer,
+  CustomerInput,
+  CustomerListParams,
+  CustomerListResult
+} from '@shared/customers'
+import type { Invoice, InvoiceCreateInput } from '@shared/invoices'
 
 const api = {
   getAppInfo: (): Promise<AppInfo> => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_INFO),
@@ -37,6 +44,28 @@ const api = {
       strategy: DuplicateStrategy
       items: ProductImportItem[]
     }): Promise<IpcResult<ProductImportSummary>> => ipcRenderer.invoke(IPC_CHANNELS.PRODUCTS_IMPORT, payload)
+  },
+
+  customers: {
+    list: (params?: CustomerListParams): Promise<CustomerListResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CUSTOMERS_LIST, params),
+    getById: (id: number): Promise<IpcResult<Customer>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CUSTOMERS_GET, { id }),
+    create: (input: CustomerInput): Promise<IpcResult<Customer>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CUSTOMERS_CREATE, { input }),
+    update: (id: number, input: CustomerInput): Promise<IpcResult<Customer>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CUSTOMERS_UPDATE, { id, input }),
+    remove: (id: number): Promise<IpcResult<{ action: 'deleted' | 'archived'; customer: Customer }>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CUSTOMERS_DELETE, { id })
+  },
+
+  invoices: {
+    create: (input: InvoiceCreateInput): Promise<IpcResult<Invoice>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.INVOICES_CREATE, { input }),
+    getById: (id: number): Promise<IpcResult<Invoice>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.INVOICES_GET, { id }),
+    getByNumber: (number: string): Promise<IpcResult<Invoice>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.INVOICES_GET_BY_NUMBER, { number })
   },
 
   files: {

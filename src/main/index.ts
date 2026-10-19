@@ -6,6 +6,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { initDatabase, closeDatabase, getDbStatus } from './db'
+import { SCHEMA_VERSION } from './db/schema'
 import { registerIpcHandlers } from './ipc'
 
 // Keep a stable data folder ("kpr-billing" in %APPDATA%) for dev and packaged builds,
@@ -104,7 +105,7 @@ function createWindow(): void {
             }
           })()
         `)
-        const schemaOk = status.ok && status.schemaVersion === 2
+        const schemaOk = status.ok && status.schemaVersion === SCHEMA_VERSION
         console.log(`[verify] renderer_mounted=${rendererOk} preload_ipc=${ipcOk} products=${productsResult}`)
         const allOk = rendererOk && ipcOk && schemaOk && productsResult === 'PRODUCTS_IPC_OK'
         console.log(allOk ? '[verify] PHASE2_ALL_OK' : '[verify] FAILURE')

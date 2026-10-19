@@ -38,7 +38,7 @@ test('fresh database gets the v2 products schema', () => {
         'updated_at'
       ].sort()
     )
-    assert.equal(t.db.pragma('user_version', { simple: true }), 2)
+    assert.equal(t.db.pragma('user_version', { simple: true }), 5)
   } finally {
     t.cleanup()
   }

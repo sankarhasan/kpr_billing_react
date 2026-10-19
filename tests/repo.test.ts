@@ -170,8 +170,8 @@ test('referenced product is archived, invoice history untouched', () => {
     t.db.exec(`INSERT INTO invoices (id, invoice_number) VALUES (1, 'INV-1')`)
     t.db
       .prepare(
-        `INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, line_total)
-         VALUES (1, ?, 'Sparkler 10cm', 2, 20, 40)`
+        `INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price_paise, line_total_paise)
+         VALUES (1, ?, 'Sparkler 10cm', 2, 2000, 4000)`
       )
       .run(created.data.id)
 

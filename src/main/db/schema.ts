@@ -7,9 +7,9 @@
  * product codes, discount definition and NO stock fields (per requirements).
  */
 
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 5
 
-/** Non-product base tables: unchanged between v1 and v2, safe on any DB. */
+/** Non-product base tables. v3: customers notes+archived_at. v4: invoices paise+snapshots. v5: invoices round_off_paise. */
 export const BASE_TABLES_SQL = `
 CREATE TABLE IF NOT EXISTS customers (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS customers (
   phone         TEXT    NOT NULL DEFAULT '',
   address       TEXT    NOT NULL DEFAULT '',
   gstin         TEXT    NOT NULL DEFAULT '',
+  notes         TEXT    NOT NULL DEFAULT '',
+  archived_at   TEXT,
   created_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
   updated_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
@@ -25,18 +27,22 @@ CREATE INDEX IF NOT EXISTS idx_customers_name ON customers (name COLLATE NOCASE)
 CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (phone);
 
 CREATE TABLE IF NOT EXISTS invoices (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  invoice_number  TEXT    NOT NULL UNIQUE,
-  customer_id     INTEGER REFERENCES customers(id) ON DELETE SET NULL,
-  invoice_date    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-  subtotal        REAL    NOT NULL DEFAULT 0,
-  discount        REAL    NOT NULL DEFAULT 0,
-  tax_amount      REAL    NOT NULL DEFAULT 0,
-  total           REAL    NOT NULL DEFAULT 0,
-  payment_mode    TEXT    NOT NULL DEFAULT 'cash',
-  status          TEXT    NOT NULL DEFAULT 'completed',
-  notes           TEXT    NOT NULL DEFAULT '',
-  created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_number    TEXT    NOT NULL UNIQUE,
+  customer_id       INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+  customer_name     TEXT    NOT NULL DEFAULT 'Walk-in Customer',
+  customer_phone    TEXT    NOT NULL DEFAULT '',
+  customer_address  TEXT    NOT NULL DEFAULT '',
+  invoice_date      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+  subtotal_paise    INTEGER NOT NULL DEFAULT 0 CHECK (subtotal_paise >= 0),
+  discount_paise    INTEGER NOT NULL DEFAULT 0 CHECK (discount_paise >= 0),
+  round_off_paise   INTEGER NOT NULL DEFAULT 0,
+  tax_amount_paise  INTEGER NOT NULL DEFAULT 0 CHECK (tax_amount_paise >= 0),
+  total_paise       INTEGER NOT NULL DEFAULT 0 CHECK (total_paise >= 0),
+  payment_mode      TEXT    NOT NULL DEFAULT 'cash',
+  status            TEXT    NOT NULL DEFAULT 'completed',
+  notes             TEXT    NOT NULL DEFAULT '',
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices (invoice_date);
@@ -44,16 +50,18 @@ CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices (customer_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_number ON invoices (invoice_number);
 
 CREATE TABLE IF NOT EXISTS invoice_items (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  invoice_id    INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
-  product_id    INTEGER REFERENCES products(id) ON DELETE SET NULL,
-  product_name  TEXT    NOT NULL,
-  quantity      REAL    NOT NULL DEFAULT 1,
-  unit          TEXT    NOT NULL DEFAULT 'pcs',
-  unit_price    REAL    NOT NULL DEFAULT 0,
-  line_total    REAL    NOT NULL DEFAULT 0,
-  gst_rate      REAL    NOT NULL DEFAULT 0,
-  gst_amount    REAL    NOT NULL DEFAULT 0
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id            INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  product_id            INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  product_code          TEXT    NOT NULL DEFAULT '',
+  product_name          TEXT    NOT NULL,
+  quantity              REAL    NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  unit_price_paise      INTEGER NOT NULL DEFAULT 0 CHECK (unit_price_paise >= 0),
+  line_total_paise      INTEGER NOT NULL DEFAULT 0 CHECK (line_total_paise >= 0),
+  original_rate_paise   INTEGER NOT NULL DEFAULT 0,
+  discount_type         TEXT    NOT NULL DEFAULT 'none',
+  discount_percent      REAL    NOT NULL DEFAULT 0,
+  discount_amount_paise INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items (invoice_id);
@@ -101,8 +109,46 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('tax_enabled', '0'),
   ('invoice_prefix', 'KPR-'),
   ('next_invoice_number', '1'),
+  ('round_off_enabled', '0'),
   ('currency_symbol', '₹'),
   ('receipt_footer', 'Thank you for shopping with us!');
+`
+
+/**
+ * v3 invoices/invoice_items DDL (REAL rupee money, no snapshot columns).
+ * Kept ONLY so v3 -> v4 upgrade tests can build a realistic old database.
+ * Do NOT execute on new databases.
+ */
+export const LEGACY_V3_INVOICES_SQL = `
+CREATE TABLE IF NOT EXISTS invoices (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_number  TEXT    NOT NULL UNIQUE,
+  customer_id     INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+  invoice_date    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+  subtotal        REAL    NOT NULL DEFAULT 0,
+  discount        REAL    NOT NULL DEFAULT 0,
+  tax_amount      REAL    NOT NULL DEFAULT 0,
+  total           REAL    NOT NULL DEFAULT 0,
+  payment_mode    TEXT    NOT NULL DEFAULT 'cash',
+  status          TEXT    NOT NULL DEFAULT 'completed',
+  notes           TEXT    NOT NULL DEFAULT '',
+  created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS invoice_items (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id    INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  product_id    INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  product_name  TEXT    NOT NULL,
+  quantity      REAL    NOT NULL DEFAULT 1,
+  unit          TEXT    NOT NULL DEFAULT 'pcs',
+  unit_price    REAL    NOT NULL DEFAULT 0,
+  line_total    REAL    NOT NULL DEFAULT 0,
+  gst_rate      REAL    NOT NULL DEFAULT 0,
+  gst_amount    REAL    NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items (invoice_id);
 `
 
 /**

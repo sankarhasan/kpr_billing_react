@@ -13,7 +13,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:test",
-    "test": "node --test tests/products.test.ts tests/csv.test.ts tests/csv-import-pipeline.test.ts tests/migration.test.ts tests/repo.test.ts tests/real-csv.test.ts",
+    "test": "node --test tests/products.test.ts tests/customers.test.ts tests/invoices.test.ts tests/csv.test.ts tests/csv-import-pipeline.test.ts tests/migration.test.ts tests/repo.test.ts tests/real-csv.test.ts",
     "smoke:db": "electron scripts/smoke-electron.cjs",
     "verify": "electron .",
     "dist": "npm run build && electron-builder --win"

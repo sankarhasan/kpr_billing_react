@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto'
 import { IPC_CHANNELS, type AppInfo, type CsvFilePicked, type CsvSaveRequest, type CsvSaveResult, type ImagePickResult } from '@shared/ipc'
 import { getDbStatus, getImagesDir, getDatabase } from './db'
 import * as repo from './db/products-repo'
+import * as customersRepo from './db/customers-repo'
+import * as invoicesRepo from './db/invoices-repo'
 import {
   ipcErr,
   type IpcResult,
@@ -18,6 +20,7 @@ import {
   type ProductImportItem,
   type ProductImportSummary
 } from '@shared/products'
+import type { CustomerListParams } from '@shared/customers'
 
 const MAX_CSV_BYTES = 20 * 1024 * 1024 // 20 MB import cap
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024 // 5 MB image pick cap
@@ -117,6 +120,19 @@ function parseListParams(value: unknown): ProductListParams {
   return params
 }
 
+function parseCustomerListParams(value: unknown): CustomerListParams {
+  const o = asOptionalObject(value, IPC_CHANNELS.CUSTOMERS_LIST)
+  const params: CustomerListParams = {}
+  const search = validString(o.search, 200, 'search')
+  if (search !== undefined) params.search = search
+  if (typeof o.includeArchived === 'boolean') params.includeArchived = o.includeArchived
+  if (typeof o.page === 'number' && Number.isInteger(o.page) && o.page > 0) params.page = Math.min(o.page, 1_000_000)
+  if (typeof o.pageSize === 'number' && Number.isInteger(o.pageSize) && o.pageSize > 0 && o.pageSize <= 500) {
+    params.pageSize = o.pageSize
+  }
+  return params
+}
+
 // ─── Import: image data URL extraction (stored as local files, never DB) ─
 
 const DATA_URL_RE = /^data:image\/(png|jpe?g|webp);base64,([A-Za-z0-9+/=\s]+)$/
@@ -203,6 +219,59 @@ export function registerIpcHandlers(): void {
   trustedHandle(IPC_CHANNELS.PRODUCTS_CATEGORIES, (args) => {
     expectNoArgs(IPC_CHANNELS.PRODUCTS_CATEGORIES, args)
     return repo.listCategories(getDatabase())
+  })
+
+  // ── Customers CRUD ──
+  trustedHandle(IPC_CHANNELS.CUSTOMERS_LIST, (args) => {
+    const params = parseCustomerListParams(args[0])
+    return customersRepo.listCustomers(getDatabase(), params)
+  })
+
+  trustedHandle(IPC_CHANNELS.CUSTOMERS_GET, (args) => {
+    const o = requireObject(args[0], IPC_CHANNELS.CUSTOMERS_GET)
+    const id = validId(o.id, IPC_CHANNELS.CUSTOMERS_GET)
+    const customer = customersRepo.getCustomer(getDatabase(), id)
+    return customer ? { ok: true, data: customer } : ipcErr('NOT_FOUND', 'Customer not found.')
+  })
+
+  trustedHandle(IPC_CHANNELS.CUSTOMERS_CREATE, (args) => {
+    const o = requireObject(args[0], IPC_CHANNELS.CUSTOMERS_CREATE)
+    return customersRepo.createCustomer(getDatabase(), o.input)
+  })
+
+  trustedHandle(IPC_CHANNELS.CUSTOMERS_UPDATE, (args) => {
+    const o = requireObject(args[0], IPC_CHANNELS.CUSTOMERS_UPDATE)
+    const id = validId(o.id, IPC_CHANNELS.CUSTOMERS_UPDATE)
+    return customersRepo.updateCustomer(getDatabase(), id, o.input)
+  })
+
+  trustedHandle(IPC_CHANNELS.CUSTOMERS_DELETE, (args) => {
+    const o = requireObject(args[0], IPC_CHANNELS.CUSTOMERS_DELETE)
+    const id = validId(o.id, IPC_CHANNELS.CUSTOMERS_DELETE)
+    return customersRepo.deleteCustomer(getDatabase(), id)
+  })
+
+  // ── Invoices ──
+  trustedHandle(IPC_CHANNELS.INVOICES_CREATE, (args) => {
+    const o = requireObject(args[0], IPC_CHANNELS.INVOICES_CREATE)
+    return invoicesRepo.createInvoice(getDatabase(), o.input)
+  })
+
+  trustedHandle(IPC_CHANNELS.INVOICES_GET, (args) => {
+    const o = requireObject(args[0], IPC_CHANNELS.INVOICES_GET)
+    const id = validId(o.id, IPC_CHANNELS.INVOICES_GET)
+    const invoice = invoicesRepo.getInvoice(getDatabase(), id)
+    return invoice ? { ok: true, data: invoice } : ipcErr('NOT_FOUND', 'Invoice not found.')
+  })
+
+  trustedHandle(IPC_CHANNELS.INVOICES_GET_BY_NUMBER, (args) => {
+    const o = requireObject(args[0], IPC_CHANNELS.INVOICES_GET_BY_NUMBER)
+    const number = validString(o.number, 60, 'number')?.trim()
+    if (!number) {
+      throw new ValidationError('INVALID_PARAMS', 'A valid invoice number is required.')
+    }
+    const invoice = invoicesRepo.getInvoiceByNumber(getDatabase(), number)
+    return invoice ? { ok: true, data: invoice } : ipcErr('NOT_FOUND', `No invoice found with number "${number}".`)
   })
 
   // ── Bulk CSV import (single transaction inside the repo) ──

@@ -15,7 +15,15 @@ export const IPC_CHANNELS = {
   PRODUCTS_IMPORT: 'products:import',
   CSV_PICK_FILE: 'csv:pickFile',
   CSV_SAVE_FILE: 'csv:saveFile',
-  IMAGE_PICK: 'image:pick'
+  IMAGE_PICK: 'image:pick',
+  CUSTOMERS_LIST: 'customers:list',
+  CUSTOMERS_GET: 'customers:getById',
+  CUSTOMERS_CREATE: 'customers:create',
+  CUSTOMERS_UPDATE: 'customers:update',
+  CUSTOMERS_DELETE: 'customers:delete',
+  INVOICES_CREATE: 'invoices:create',
+  INVOICES_GET: 'invoices:getById',
+  INVOICES_GET_BY_NUMBER: 'invoices:getByNumber'
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]
